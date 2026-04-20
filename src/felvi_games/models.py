@@ -25,14 +25,21 @@ class Feladat:
     helyes_valasz: str
     hint: str
     magyarazat: str
-    # --- compiled assets (optional, cached after first use) ---
+    # --- exam provenance ---
     targy: str = ""
-    pdf_source: str | None = None        # originating PDF filename
+    pdf_source: str | None = None        # feladatlap PDF filename (e.g. M8_2025_1_fl.pdf)
+    ut_source: str | None = None         # útmutató PDF filename  (e.g. M8_2025_1_ut.pdf)
+    ev: int | None = None                # exam year (e.g. 2025)
+    valtozat: int | None = None          # variant within year (1 or 2)
+    feladat_sorszam: str | None = None   # position in exam (e.g. "1a", "2b", "3")
+    # --- compiled assets (optional, cached after first use) ---
     tts_kerdes: bytes | None = None      # pre-rendered TTS for the question
     tts_magyarazat: bytes | None = None  # pre-rendered TTS for the explanation
 
     @classmethod
     def from_dict(cls, d: dict, targy: str = "") -> "Feladat":
+        ev_raw = d.get("ev")
+        val_raw = d.get("valtozat")
         return cls(
             id=d["id"],
             neh=d["neh"],
@@ -43,6 +50,10 @@ class Feladat:
             magyarazat=d["magyarazat"],
             targy=targy or d.get("targy", ""),
             pdf_source=d.get("pdf_source"),
+            ut_source=d.get("ut_source"),
+            ev=int(ev_raw) if ev_raw is not None else None,
+            valtozat=int(val_raw) if val_raw is not None else None,
+            feladat_sorszam=d.get("feladat_sorszam"),
         )
 
     @classmethod
@@ -57,6 +68,10 @@ class Feladat:
             magyarazat=r.magyarazat,
             targy=r.targy,
             pdf_source=r.pdf_source,
+            ut_source=r.ut_source,
+            ev=r.ev,
+            valtozat=r.valtozat,
+            feladat_sorszam=r.feladat_sorszam,
             tts_kerdes=r.tts_kerdes,
             tts_magyarazat=r.tts_magyarazat,
         )
@@ -77,6 +92,10 @@ class Feladat:
             magyarazat=self.magyarazat,
             targy=self.targy,
             pdf_source=self.pdf_source,
+            ut_source=self.ut_source,
+            ev=self.ev,
+            valtozat=self.valtozat,
+            feladat_sorszam=self.feladat_sorszam,
             tts_kerdes=tts_kerdes if tts_kerdes is not None else self.tts_kerdes,
             tts_magyarazat=tts_magyarazat if tts_magyarazat is not None else self.tts_magyarazat,
         )

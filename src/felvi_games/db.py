@@ -64,6 +64,10 @@ class FeladatRecord(Base):
 
     # Source tracking
     pdf_source: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    ut_source: Mapped[str | None] = mapped_column(String(256), nullable=True, index=True)
+    ev: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    valtozat: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    feladat_sorszam: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # Compiled TTS assets (stored as raw MP3 bytes)
     tts_kerdes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)

@@ -118,6 +118,7 @@ def extract_feladatok(
     ut_text: str,
     targy: str,
     pdf_source: str,
+    ut_source: str = "",
     *,
     model: str | None = None,
 ) -> list[Feladat]:
@@ -129,12 +130,15 @@ def extract_feladatok(
     client = _make_openai_client()
     model = model or os.getenv("LLM_MODEL", "gpt-4o")
 
-    # Build a short id prefix from the source filename, e.g. "matek_2025_1"
+    meta = parse_filename_meta(pdf_source)
     id_prefix = _id_prefix_from_source(pdf_source, targy)
 
     prompt = _USER_TEMPLATE.format(
         targy=targy,
         pdf_source=pdf_source,
+        ut_source=ut_source or "(ismeretlen)",
+        ev=meta["ev"] or "(ismeretlen)",
+        valtozat=meta["valtozat"] or "(ismeretlen)",
         fl_text=fl_text[:12_000],   # keep within token budget
         ut_text=ut_text[:6_000],
         id_prefix=id_prefix,
@@ -160,6 +164,9 @@ def extract_feladatok(
         try:
             item["targy"] = targy
             item["pdf_source"] = pdf_source
+            item["ut_source"] = ut_source
+            item.setdefault("ev", meta["ev"])
+            item.setdefault("valtozat", meta["valtozat"])
             feladatok.append(_dict_to_feladat(item))
         except (KeyError, ValueError, TypeError) as exc:
             logger.warning("Skipping invalid item %s: %s", item.get("id"), exc)
@@ -169,13 +176,35 @@ def extract_feladatok(
 
 
 def _id_prefix_from_source(pdf_source: str, targy: str) -> str:
-    """'M8_2025_1_fl.pdf' → 'matek_2025_1'."""
-    stem = Path(pdf_source).stem              # M8_2025_1_fl
-    parts = stem.split("_")                   # [M8, 2025, 1, fl]
-    year = parts[1] if len(parts) > 1 else "xx"
-    seq = parts[2] if len(parts) > 2 else "1"
+    """'M8_2025_1_fl.pdf' → 'mat_2025_1'."""
+    meta = parse_filename_meta(pdf_source)
+    year = str(meta["ev"]) if meta["ev"] else "xx"
+    seq = str(meta["valtozat"]) if meta["valtozat"] else "1"
     short = "mat" if targy == "matek" else "mag"
     return f"{short}_{year}_{seq}"
+
+
+def parse_filename_meta(filename: str) -> dict:
+    """Extract structured metadata from a felvételi PDF filename.
+
+    'M8_2025_1_fl.pdf' → {'ev': 2025, 'valtozat': 1, 'kind': 'fl', 'targy': 'matek'}
+    'A8_2024_2_ut.pdf' → {'ev': 2024, 'valtozat': 2, 'kind': 'ut', 'targy': 'magyar'}
+    Returns None values for any field that cannot be parsed.
+    """
+    m = re.match(
+        r"^([AM])8_(\d{4})_(\d+)_(fl|ut)\.pdf$",
+        Path(filename).name,
+        re.IGNORECASE,
+    )
+    if not m:
+        return {"ev": None, "valtozat": None, "kind": None, "targy": None}
+    prefix, year, seq, kind = m.groups()
+    return {
+        "ev": int(year),
+        "valtozat": int(seq),
+        "kind": kind.lower(),
+        "targy": _TARGY_MAP.get(prefix.upper()),
+    }
 
 
 def _dict_to_feladat(d: dict) -> Feladat:
@@ -187,6 +216,8 @@ def _dict_to_feladat(d: dict) -> Feladat:
     neh = int(d["neh"])
     if neh not in (1, 2, 3):
         raise ValueError(f"neh must be 1-3, got {neh!r}")
+    ev_raw = d.get("ev")
+    val_raw = d.get("valtozat")
     return Feladat(
         id=str(d["id"]),
         neh=neh,
@@ -196,7 +227,11 @@ def _dict_to_feladat(d: dict) -> Feladat:
         hint=str(d["hint"]),
         magyarazat=str(d["magyarazat"]),
         targy=str(d.get("targy", "")),
-        pdf_source=str(d.get("pdf_source", "")),
+        pdf_source=str(d.get("pdf_source", "")) or None,
+        ut_source=str(d.get("ut_source", "")) or None,
+        ev=int(ev_raw) if ev_raw is not None else None,
+        valtozat=int(val_raw) if val_raw is not None else None,
+        feladat_sorszam=str(d["feladat_sorszam"]) if d.get("feladat_sorszam") else None,
     )
 
 
@@ -253,6 +288,10 @@ def review_feladatok(feladatok: list[Feladat]) -> list[Feladat]:
 def _print_feladat(f: Feladat) -> None:
     fields = [
         ("id", f.id),
+        ("feladat_sorszam", f.feladat_sorszam or "-"),
+        ("ev / valtozat", f"{f.ev or '-'} / {f.valtozat or '-'}"),
+        ("pdf_source", f.pdf_source or "-"),
+        ("ut_source", f.ut_source or "-"),
         ("kerdes", f.kerdes),
         ("helyes_valasz", f.helyes_valasz),
         ("hint", f.hint),
@@ -289,6 +328,9 @@ def _edit_feladat(f: Feladat) -> Feladat:
         "hint": updates.get("hint", f.hint),
         "magyarazat": updates.get("magyarazat", f.magyarazat),
         "targy": f.targy, "pdf_source": f.pdf_source,
+        "ut_source": f.ut_source,
+        "ev": f.ev, "valtozat": f.valtozat,
+        "feladat_sorszam": f.feladat_sorszam,
     }
     try:
         return _dict_to_feladat(d)
@@ -340,7 +382,10 @@ def parse_exam(
     fl_text = pdf_to_text(fl_path)
     ut_text = pdf_to_text(ut_path)
     return extract_feladatok(
-        fl_text, ut_text, targy, fl_path.name, model=model
+        fl_text, ut_text, targy,
+        pdf_source=fl_path.name,
+        ut_source=ut_path.name,
+        model=model,
     )
 
 

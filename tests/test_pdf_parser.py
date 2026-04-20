@@ -18,6 +18,7 @@ from felvi_games.pdf_parser import (
     extract_feladatok,
     find_exam_pairs,
     parse_exam,
+    parse_filename_meta,
     pdf_to_text,
 )
 
@@ -109,6 +110,25 @@ class TestIdPrefix:
         assert prefix.startswith("mat_")
 
 
+class TestParseFilenameMeta:
+    def test_matek_feladatlap(self):
+        m = parse_filename_meta("M8_2025_1_fl.pdf")
+        assert m == {"ev": 2025, "valtozat": 1, "kind": "fl", "targy": "matek"}
+
+    def test_magyar_utmutato(self):
+        m = parse_filename_meta("A8_2024_2_ut.pdf")
+        assert m == {"ev": 2024, "valtozat": 2, "kind": "ut", "targy": "magyar"}
+
+    def test_unknown_filename_returns_nones(self):
+        m = parse_filename_meta("random.pdf")
+        assert m == {"ev": None, "valtozat": None, "kind": None, "targy": None}
+
+    def test_lowercase_prefix_accepted(self):
+        m = parse_filename_meta("m8_2026_1_fl.pdf")
+        assert m["targy"] == "matek"
+        assert m["ev"] == 2026
+
+
 # ---------------------------------------------------------------------------
 # _dict_to_feladat
 # ---------------------------------------------------------------------------
@@ -138,7 +158,11 @@ class TestDictToFeladat:
     def test_optional_fields_default_to_empty(self):
         f = _dict_to_feladat(_SAMPLE_ITEM)
         assert f.targy == ""
-        assert f.pdf_source == ""
+        assert f.pdf_source is None
+        assert f.ut_source is None
+        assert f.ev is None
+        assert f.valtozat is None
+        assert f.feladat_sorszam is None
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +220,28 @@ class TestExtractFeladatok:
         call_kwargs = mock_client.chat.completions.create.call_args.kwargs
         assert call_kwargs["model"] == "gpt-test-model"
 
-    def test_text_truncated_to_token_budget(self):
+    def test_ev_valtozat_injected_from_filename(self):
+        result = self._run([_SAMPLE_ITEM])
+        assert result[0].ev == 2025
+        assert result[0].valtozat == 1
+
+    def test_ut_source_propagated(self):
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = _gpt_response([_SAMPLE_ITEM])
+        with patch("felvi_games.pdf_parser._make_openai_client", return_value=mock_client):
+            result = extract_feladatok(
+                "fl", "ut", "matek", "M8_2025_1_fl.pdf", "M8_2025_1_ut.pdf"
+            )
+        assert result[0].ut_source == "M8_2025_1_ut.pdf"
+
+    def test_feladat_sorszam_from_gpt(self):
+        item_with_sorszam = {**_SAMPLE_ITEM, "feladat_sorszam": "1a"}
+        result = self._run([item_with_sorszam])
+        assert result[0].feladat_sorszam == "1a"
+
+    def test_feladat_sorszam_missing_defaults_none(self):
+        result = self._run([_SAMPLE_ITEM])   # _SAMPLE_ITEM has no feladat_sorszam
+        assert result[0].feladat_sorszam is None
         """fl_text longer than 12K chars is still sent (truncated inside function)."""
         long_text = "x" * 20_000
         mock_client = MagicMock()
