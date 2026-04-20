@@ -17,6 +17,20 @@ dependencies = [
     "sqlalchemy>=2.0.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.coverage.run]
+source = ["src/felvi_games"]
+omit = ["*/app.py"]  # Streamlit UI – skip in unit tests
+
 [project.scripts]
 felvi-scraper = "felvi_games.scraper:main"
 
