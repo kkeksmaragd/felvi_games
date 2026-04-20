@@ -33,6 +33,7 @@ omit = ["*/app.py"]  # Streamlit UI – skip in unit tests
 
 [project.scripts]
 felvi-scraper = "felvi_games.scraper:main"
+felvi-parse   = "felvi_games.pdf_parser:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
