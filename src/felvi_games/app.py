@@ -18,7 +18,7 @@ from felvi_games.models import Ertekeles, Fazis, Feladat, GameState
 
 _DATA_DIR = Path(__file__).parent.parent.parent / "data"
 _TARGYAK = ["matek", "magyar"]
-_SZINTEK = ["mind", "6 osztályos", "8 osztályos"]
+_SZINTEK = ["mind", "6 osztályos", "8 osztályos", "9 osztályos"]
 
 # ---------------------------------------------------------------------------
 # Repository (singleton per process)
@@ -85,11 +85,16 @@ def next_feladat(feladatok: dict[str, list[Feladat]], gs: GameState) -> Feladat 
 
 
 def start_kerdes(feladat: Feladat, gs: GameState) -> None:
-    gs.aktualis = feladat
+    # Reload from DB so pre-rendered TTS bytes are present
+    fresh = get_repo().get(feladat.id)
+    gs.aktualis = fresh if fresh else feladat
     gs.fazis = Fazis.KERDES
     gs.atiras = ""
     gs.ertekeles = None
     gs.tts_audio = None
+    # Auto-populate session audio from DB cache
+    if gs.aktualis and gs.aktualis.tts_kerdes:
+        gs.tts_audio = gs.aktualis.tts_kerdes
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +146,7 @@ def _render_valasztas(
             "Szint",
             options=_SZINTEK,
             format_func=lambda x: "🌟 Mind" if x == "mind" else x,
-            index=_SZINTEK.index(gs.szint),
+            index=_SZINTEK.index(gs.szint) if gs.szint in _SZINTEK else 0,
             horizontal=True,
         )
 
@@ -174,20 +179,22 @@ def _render_kerdes(gs: GameState) -> None:
     col_tts, col_hint = st.columns(2)
     with col_tts:
         if st.button("🔊 Feladat felolvasása"):
-            with st.spinner("Hangszintézis..."):
-                audio = text_to_speech(feladat.tts_szoveg())
-                gs.tts_audio = audio
-                # Persist so subsequent loads skip the API call
-                get_repo().save_tts_assets(feladat.id, tts_kerdes=audio)
+            if feladat.tts_kerdes:
+                # Use cached audio from DB, no API call needed
+                gs.tts_audio = feladat.tts_kerdes
+            else:
+                with st.spinner("Hangszintézis..."):
+                    audio = text_to_speech(feladat.tts_szoveg())
+                    gs.tts_audio = audio
+                    get_repo().save_tts_assets(feladat.id, tts_kerdes=audio)
+                    # Update session feladat so the cache check works if clicked again
+                    gs.aktualis = feladat.with_assets(tts_kerdes=audio)
+            st.rerun()
     with col_hint:
         if st.button("💡 Tipp"):
             st.toast(feladat.hint, icon="💡")
 
     if gs.tts_audio:
-        st.audio(gs.tts_audio, format="audio/mp3", autoplay=True)
-    elif feladat.tts_kerdes:
-        # Use pre-rendered asset from DB
-        gs.tts_audio = feladat.tts_kerdes
         st.audio(gs.tts_audio, format="audio/mp3", autoplay=True)
 
     st.markdown("---")
@@ -250,6 +257,17 @@ def _render_eredmeny(feladatok: dict[str, list[Feladat]], gs: GameState) -> None
         with st.spinner("Hangszintézis..."):
             audio = text_to_speech(feladat.eredmeny_tts_szoveg(ert.visszajelzes))
         st.audio(audio, format="audio/mp3", autoplay=True)
+
+    if st.button("📚 Magyarázat felolvasása"):
+        if feladat.tts_magyarazat:
+            st.audio(feladat.tts_magyarazat, format="audio/mp3", autoplay=True)
+        else:
+            with st.spinner("Hangszintézis..."):
+                mag_szoveg = f"A helyes válasz: {feladat.helyes_valasz}. {feladat.magyarazat}"
+                audio = text_to_speech(mag_szoveg)
+                get_repo().save_tts_assets(feladat.id, tts_magyarazat=audio)
+                gs.aktualis = feladat.with_assets(tts_magyarazat=audio)
+            st.audio(audio, format="audio/mp3", autoplay=True)
 
     st.divider()
 
