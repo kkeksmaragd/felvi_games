@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -144,6 +145,34 @@ class Ertekeles:
         return cls(helyes=False, visszajelzes="Nem sikerült értékelni.", pont=0)
 
 
+@dataclass(frozen=True)
+class Menet:
+    """A single playing session for one user."""
+    id: int
+    felhasznalo: str
+    targy: str
+    szint: str
+    feladat_limit: int        # planned task count
+    megoldott: int            # completed tasks
+    pont: int                 # total score in session
+    started_at: datetime
+    ended_at: datetime | None = None
+
+    @property
+    def lezart(self) -> bool:
+        return self.ended_at is not None or self.megoldott >= self.feladat_limit
+
+    @property
+    def idotartam_perc(self) -> str:
+        """Duration as M:SS string (handles tz-naive/aware mismatch)."""
+        end = self.ended_at or datetime.now(timezone.utc)
+        s = self.started_at.replace(tzinfo=None) if self.started_at.tzinfo else self.started_at
+        e = end.replace(tzinfo=None) if end.tzinfo else end
+        secs = int((e - s).total_seconds())
+        m, sec = divmod(abs(secs), 60)
+        return f"{m}:{sec:02d}"
+
+
 @dataclass
 class GameState:
     pont: int = 0
@@ -157,9 +186,18 @@ class GameState:
     atiras: str = ""
     ertekeles: Ertekeles | None = None
     tts_audio: bytes | None = None
+    # --- user & session tracking ---
+    felhasznalo: str = ""
+    menet_id: int | None = None
+    menet_cel: int = 10
+    menet_megoldott: int = 0       # answers in current session
+    kerdes_kezdete: datetime | None = None
+    segitseg_kert: bool = False    # hint used on current question
+    hibajelezes: bool = False      # error flagged on current question
 
     def record_answer(self, feladat: Feladat, ertekeles: Ertekeles) -> None:
         self.megoldott_ids.add(feladat.id)
+        self.menet_megoldott += 1
         self.ertekeles = ertekeles
         if ertekeles.helyes:
             self.pont += ertekeles.pont
@@ -167,9 +205,25 @@ class GameState:
             self.max_streak = max(self.streak, self.max_streak)
         else:
             self.streak = 0
+        self.kerdes_kezdete = None
 
     def reset(self) -> None:
+        """Full reset, keeps the current user logged in."""
+        nev = self.felhasznalo
         self.__init__()  # type: ignore[misc]
+        self.felhasznalo = nev
+
+    def uj_menet(self) -> None:
+        """Start a fresh session, keeping user, targy, szint and menet_cel."""
+        nev = self.felhasznalo
+        cel = self.menet_cel
+        targy = self.targy
+        szint = self.szint
+        self.__init__()  # type: ignore[misc]
+        self.felhasznalo = nev
+        self.menet_cel = cel
+        self.targy = targy
+        self.szint = szint
 
 
 # ---------------------------------------------------------------------------

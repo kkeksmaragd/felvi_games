@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -96,6 +97,9 @@ def start_kerdes(feladat: Feladat, gs: GameState) -> None:
     gs.atiras = ""
     gs.ertekeles = None
     gs.tts_audio = None
+    gs.kerdes_kezdete = datetime.now(timezone.utc)
+    gs.segitseg_kert = False
+    gs.hibajelezes = False
     # Auto-load cached TTS from file if available
     if gs.aktualis and gs.aktualis.tts_kerdes_path:
         gs.tts_audio = resolve_asset(gs.aktualis.tts_kerdes_path).read_bytes()
@@ -109,8 +113,8 @@ def start_kerdes(feladat: Feladat, gs: GameState) -> None:
 def _render_header(gs: GameState) -> None:
     col1, col2, col3 = st.columns([2, 1, 1])
     with col1:
-        st.title("🎯 Felvételi Kvíz")
-    with col2:
+        st.title("🎯 Felvételi Kvíz")        if gs.felhasznalo:
+            st.caption(f"👤 {gs.felhasznalo}")    with col2:
         st.metric("Pont", gs.pont)
     with col3:
         streak = gs.streak
@@ -125,10 +129,44 @@ def _render_sidebar(gs: GameState) -> None:
         st.metric("Jelenlegi sorozat", gs.streak)
         st.metric("Legjobb sorozat", gs.max_streak)
         st.metric("Megoldott feladatok", len(gs.megoldott_ids))
+
+        if gs.menet_id:
+            st.divider()
+            st.caption("📋 Aktuális menet")
+            st.progress(
+                min(gs.menet_megoldott / gs.menet_cel, 1.0),
+                text=f"Feladat: {gs.menet_megoldott} / {gs.menet_cel}",
+            )
+
         st.divider()
-        if st.button("🔄 Újraindítás", use_container_width=True):
-            gs.reset()
-            st.rerun()
+        col_new, col_out = st.columns(2)
+        with col_new:
+            if st.button("🔄 Új menet", use_container_width=True):
+                if gs.menet_id:
+                    get_repo().end_menet(gs.menet_id)
+                gs.uj_menet()
+                st.rerun()
+        with col_out:
+            if st.button("🚶 Kilépés", use_container_width=True):
+                if gs.menet_id:
+                    get_repo().end_menet(gs.menet_id)
+                gs.reset()
+                gs.felhasznalo = ""
+                st.rerun()
+
+        if gs.felhasznalo:
+            menetek = get_repo().get_menetek(gs.felhasznalo)
+            if menetek:
+                st.divider()
+                with st.expander(f"📜 Korábbi menetek ({len(menetek)})", expanded=False):
+                    for m in menetek:
+                        status = "✅" if m.lezart else "🔄"
+                        st.caption(
+                            f"{status} {m.targy} – "
+                            f"{m.megoldott}/{m.feladat_limit} feladat, "
+                            f"{m.pont} pont, {m.idotartam_perc}"
+                        )
+
         st.divider()
         st.caption("Felvételi Kvíz v0.1\nOpenAI TTS + Whisper + GPT")
 
@@ -154,10 +192,23 @@ def _render_valasztas(
             horizontal=True,
         )
 
+    if gs.menet_id is None:
+        gs.menet_cel = int(st.number_input(
+            "Feladatok száma egy menetben:",
+            min_value=5, max_value=50, value=gs.menet_cel, step=5,
+        ))
+    else:
+        st.caption(f"🎯 Menet: {gs.menet_megoldott} / {gs.menet_cel} feladat")
+
     st.markdown("")
     if st.button("🚀 Következő feladat!", use_container_width=True, type="primary"):
         feladat = next_feladat(feladatok, gs)
         if feladat:
+            if gs.menet_id is None:
+                gs.menet_id = get_repo().start_menet(
+                    gs.felhasznalo, gs.targy, gs.szint, gs.menet_cel
+                )
+                gs.menet_megoldott = 0
             start_kerdes(feladat, gs)
             st.rerun()
         else:
@@ -194,7 +245,7 @@ def _render_kerdes(gs: GameState) -> None:
         )
     _render_pdf_button(feladat)
 
-    col_tts, col_hint = st.columns(2)
+    col_tts, col_hint, col_hiba = st.columns(3)
     with col_tts:
         if st.button("🔊 Feladat felolvasása"):
             if feladat.tts_kerdes_path:
@@ -208,7 +259,12 @@ def _render_kerdes(gs: GameState) -> None:
             st.rerun()
     with col_hint:
         if st.button("💡 Tipp"):
+            gs.segitseg_kert = True
             st.toast(feladat.hint, icon="💡")
+    with col_hiba:
+        if st.button("🚩 Hibát jelzek", help="Hibás feladatszöveg bejelentése"):
+            gs.hibajelezes = True
+            st.toast("Köszönjük a visszajelzést!", icon="🚩")
 
     if gs.tts_audio:
         st.audio(gs.tts_audio, format="audio/mp3", autoplay=True)
@@ -244,8 +300,24 @@ def _render_kerdes(gs: GameState) -> None:
                     valasz,
                     feladat.magyarazat,
                 )
+            elapsed = (
+                (datetime.now(timezone.utc) - gs.kerdes_kezdete).total_seconds()
+                if gs.kerdes_kezdete else None
+            )
             gs.record_answer(feladat, ert)
-            get_repo().save_megoldas(feladat, valasz, ert)
+            get_repo().save_megoldas(
+                feladat, valasz, ert,
+                felhasznalo_nev=gs.felhasznalo,
+                menet_id=gs.menet_id,
+                elapsed_sec=elapsed,
+                segitseg_kert=gs.segitseg_kert,
+                hibajelezes=gs.hibajelezes,
+            )
+            if gs.menet_id:
+                get_repo().update_menet_progress(gs.menet_id, gs.menet_megoldott, gs.pont)
+                if gs.menet_megoldott >= gs.menet_cel:
+                    get_repo().end_menet(gs.menet_id)
+                    gs.menet_id = None
             gs.fazis = Fazis.EREDMENY
             st.rerun()
     with col_vissza:
@@ -294,11 +366,21 @@ def _render_eredmeny(feladatok: dict[str, list[Feladat]], gs: GameState) -> None
 
     st.divider()
 
+    # Session completion banner
+    if gs.menet_id is None and gs.menet_megoldott > 0 and gs.menet_megoldott >= gs.menet_cel:
+        st.success(f"🏆 Menet vége! {gs.menet_megoldott} feladatot oldottál meg, {gs.pont} ponttal.")
+        st.info("🔄 Kattints az ‚Új menet’ gombra a bal oldali menüben, vagy folytasd tovább!")
+
     col_next, col_home = st.columns(2)
     with col_next:
         if st.button("➡️ Következő feladat", use_container_width=True, type="primary"):
             feladat = next_feladat(feladatok, gs)
             if feladat:
+                if gs.menet_id is None:
+                    gs.menet_id = get_repo().start_menet(
+                        gs.felhasznalo, gs.targy, gs.szint, gs.menet_cel
+                    )
+                    gs.menet_megoldott = 0
                 start_kerdes(feladat, gs)
                 st.rerun()
             else:
@@ -345,6 +427,21 @@ def _render_source_expanders(feladat: Feladat, *, show_ut: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Login
+# ---------------------------------------------------------------------------
+
+
+def _render_login(gs: GameState) -> None:
+    st.title("🎯 Felvételi Kvíz")
+    st.markdown("### Kinek szól a játék?")
+    nev = st.text_input("Neved:", placeholder="pl. Bence", max_chars=64)
+    if st.button("Tovább →", type="primary", disabled=not nev.strip()):
+        gs.felhasznalo = nev.strip()
+        get_repo().get_or_create_felhasznalo(nev.strip())
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -354,6 +451,10 @@ def main() -> None:
 
     gs = get_state()
     feladatok = load_feladatok()
+
+    if not gs.felhasznalo:
+        _render_login(gs)
+        return
 
     _render_header(gs)
     _render_sidebar(gs)

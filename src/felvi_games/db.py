@@ -9,6 +9,7 @@ from typing import Sequence
 from sqlalchemy import (
     Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -30,7 +31,7 @@ from felvi_games.config import (
     relative_asset_path,
     resolve_asset,
 )
-from felvi_games.models import Ertekeles, Feladat
+from felvi_games.models import Ertekeles, Feladat, Menet
 
 # ---------------------------------------------------------------------------
 # Engine
@@ -50,6 +51,59 @@ def get_engine(db_path: Path | None = None):
 
 class Base(DeclarativeBase):
     pass
+
+
+class FelhasznaloRecord(Base):
+    """A registered player."""
+
+    __tablename__ = "felhasznalok"
+
+    nev: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+
+    menetek: Mapped[list["MenetRecord"]] = relationship(
+        back_populates="felhasznalo", cascade="all, delete-orphan"
+    )
+
+
+class MenetRecord(Base):
+    """A single playing session."""
+
+    __tablename__ = "menetek"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    felhasznalo_nev: Mapped[str] = mapped_column(
+        ForeignKey("felhasznalok.nev", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    targy: Mapped[str] = mapped_column(String(16), nullable=False)
+    szint: Mapped[str] = mapped_column(String(32), nullable=False)
+    feladat_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    megoldott: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pont: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    felhasznalo: Mapped["FelhasznaloRecord"] = relationship(back_populates="menetek")
+    megoldasok: Mapped[list["MegoldasRecord"]] = relationship(back_populates="menet")
+
+    def to_domain(self) -> Menet:
+        return Menet(
+            id=self.id,
+            felhasznalo=self.felhasznalo_nev,
+            targy=self.targy,
+            szint=self.szint,
+            feladat_limit=self.feladat_limit,
+            megoldott=self.megoldott,
+            pont=self.pont,
+            started_at=self.started_at,
+            ended_at=self.ended_at,
+        )
 
 
 class FeladatRecord(Base):
@@ -112,15 +166,23 @@ class MegoldasRecord(Base):
     feladat_id: Mapped[str] = mapped_column(
         ForeignKey("feladatok.id", ondelete="CASCADE"), index=True
     )
+    menet_id: Mapped[int | None] = mapped_column(
+        ForeignKey("menetek.id"), nullable=True, index=True
+    )
+    felhasznalo_nev: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     adott_valasz: Mapped[str] = mapped_column(Text, nullable=False)
     helyes: Mapped[bool] = mapped_column(Boolean, nullable=False)
     pont: Mapped[int] = mapped_column(Integer, nullable=False)
     visszajelzes: Mapped[str] = mapped_column(Text, nullable=False)
+    elapsed_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
+    segitseg_kert: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    hibajelezes: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )
 
     feladat: Mapped["FeladatRecord"] = relationship(back_populates="megoldasok")
+    menet: Mapped["MenetRecord | None"] = relationship(back_populates="megoldasok")
 
 
 def init_db(db_path: Path | None = None) -> None:
@@ -331,14 +393,25 @@ class FeladatRepository:
         feladat: Feladat,
         adott_valasz: str,
         ertekeles: Ertekeles,
+        *,
+        felhasznalo_nev: str = "",
+        menet_id: int | None = None,
+        elapsed_sec: float | None = None,
+        segitseg_kert: bool = False,
+        hibajelezes: bool = False,
     ) -> None:
         with Session(self._engine) as session:
             session.add(MegoldasRecord(
                 feladat_id=feladat.id,
+                menet_id=menet_id,
+                felhasznalo_nev=felhasznalo_nev,
                 adott_valasz=adott_valasz,
                 helyes=ertekeles.helyes,
                 pont=ertekeles.pont,
                 visszajelzes=ertekeles.visszajelzes,
+                elapsed_sec=elapsed_sec,
+                segitseg_kert=segitseg_kert,
+                hibajelezes=hibajelezes,
             ))
             session.commit()
 
@@ -352,3 +425,59 @@ class FeladatRepository:
                 "correct": helyes,
                 "accuracy": round(helyes / total * 100, 1) if total else 0.0,
             }
+
+    # --- Felhasznalo & Menet ---
+
+    def get_or_create_felhasznalo(self, nev: str) -> None:
+        """Ensure a player record exists for the given name."""
+        with Session(self._engine) as session:
+            if session.get(FelhasznaloRecord, nev) is None:
+                session.add(FelhasznaloRecord(nev=nev))
+                session.commit()
+
+    def start_menet(
+        self,
+        felhasznalo_nev: str,
+        targy: str,
+        szint: str,
+        feladat_limit: int,
+    ) -> int:
+        """Create a new playing session and return its id."""
+        with Session(self._engine) as session:
+            record = MenetRecord(
+                felhasznalo_nev=felhasznalo_nev,
+                targy=targy,
+                szint=szint,
+                feladat_limit=feladat_limit,
+            )
+            session.add(record)
+            session.commit()
+            return record.id
+
+    def end_menet(self, menet_id: int) -> None:
+        """Mark a session as ended."""
+        with Session(self._engine) as session:
+            record = session.get(MenetRecord, menet_id)
+            if record and record.ended_at is None:
+                record.ended_at = datetime.now(timezone.utc)
+                session.commit()
+
+    def update_menet_progress(self, menet_id: int, megoldott: int, pont: int) -> None:
+        """Persist in-progress counters (task count + score) to the session record."""
+        with Session(self._engine) as session:
+            record = session.get(MenetRecord, menet_id)
+            if record:
+                record.megoldott = megoldott
+                record.pont = pont
+                session.commit()
+
+    def get_menetek(self, felhasznalo_nev: str, limit: int = 10) -> list[Menet]:
+        """Return recent sessions for a user, newest first."""
+        with Session(self._engine) as session:
+            stmt = (
+                select(MenetRecord)
+                .where(MenetRecord.felhasznalo_nev == felhasznalo_nev)
+                .order_by(MenetRecord.started_at.desc())
+                .limit(limit)
+            )
+            return [r.to_domain() for r in session.scalars(stmt)]

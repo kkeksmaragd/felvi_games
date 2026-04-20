@@ -295,3 +295,124 @@ class TestFeladatWithAssets:
     def test_with_assets_does_not_mutate_original(self, feladat_matek):
         feladat_matek.with_assets(tts_kerdes_path="sub/k.mp3")
         assert feladat_matek.tts_kerdes_path is None
+
+
+# ---------------------------------------------------------------------------
+# Felhasznalo & Menet
+# ---------------------------------------------------------------------------
+
+
+class TestFelhasznalo:
+    def test_get_or_create_creates_new(self, repo):
+        repo.get_or_create_felhasznalo("Bence")
+        from sqlalchemy.orm import Session
+        from felvi_games.db import FelhasznaloRecord
+        with Session(repo._engine) as session:
+            record = session.get(FelhasznaloRecord, "Bence")
+        assert record is not None
+        assert record.nev == "Bence"
+
+    def test_get_or_create_idempotent(self, repo):
+        repo.get_or_create_felhasznalo("Anna")
+        repo.get_or_create_felhasznalo("Anna")  # second call must not raise
+        from sqlalchemy.orm import Session
+        from felvi_games.db import FelhasznaloRecord
+        with Session(repo._engine) as session:
+            count = session.query(FelhasznaloRecord).filter_by(nev="Anna").count()
+        assert count == 1
+
+
+class TestMenet:
+    def test_start_menet_returns_positive_id(self, repo):
+        repo.get_or_create_felhasznalo("Tomi")
+        menet_id = repo.start_menet("Tomi", "matek", "mind", 10)
+        assert isinstance(menet_id, int)
+        assert menet_id > 0
+
+    def test_end_menet_sets_ended_at(self, repo):
+        from sqlalchemy.orm import Session
+        from felvi_games.db import MenetRecord
+        repo.get_or_create_felhasznalo("Eva")
+        mid = repo.start_menet("Eva", "matek", "mind", 10)
+        repo.end_menet(mid)
+        with Session(repo._engine) as session:
+            record = session.get(MenetRecord, mid)
+        assert record.ended_at is not None
+
+    def test_end_menet_idempotent(self, repo):
+        repo.get_or_create_felhasznalo("Peti")
+        mid = repo.start_menet("Peti", "matek", "mind", 5)
+        repo.end_menet(mid)
+        repo.end_menet(mid)  # second call must not raise or change ended_at
+
+    def test_update_menet_progress(self, repo):
+        from sqlalchemy.orm import Session
+        from felvi_games.db import MenetRecord
+        repo.get_or_create_felhasznalo("Sara")
+        mid = repo.start_menet("Sara", "matek", "6 osztályos", 10)
+        repo.update_menet_progress(mid, megoldott=3, pont=27)
+        with Session(repo._engine) as session:
+            record = session.get(MenetRecord, mid)
+        assert record.megoldott == 3
+        assert record.pont == 27
+
+    def test_get_menetek_returns_newest_first(self, repo):
+        repo.get_or_create_felhasznalo("Nora")
+        id1 = repo.start_menet("Nora", "matek", "mind", 10)
+        id2 = repo.start_menet("Nora", "magyar", "mind", 5)
+        menetek = repo.get_menetek("Nora")
+        assert len(menetek) == 2
+        assert menetek[0].id == id2  # newest first
+        assert menetek[1].id == id1
+
+    def test_get_menetek_empty_for_unknown_user(self, repo):
+        assert repo.get_menetek("ismeretlen") == []
+
+    def test_get_menetek_respects_limit(self, repo):
+        repo.get_or_create_felhasznalo("Max")
+        for _ in range(15):
+            repo.start_menet("Max", "matek", "mind", 10)
+        assert len(repo.get_menetek("Max", limit=5)) == 5
+
+    def test_menet_domain_fields(self, repo):
+        repo.get_or_create_felhasznalo("Dora")
+        mid = repo.start_menet("Dora", "matek", "6 osztályos", 10)
+        menetek = repo.get_menetek("Dora")
+        assert len(menetek) == 1
+        m = menetek[0]
+        assert m.id == mid
+        assert m.felhasznalo == "Dora"
+        assert m.targy == "matek"
+        assert m.feladat_limit == 10
+        assert m.lezart is False
+
+
+class TestMegoldasWithTracking:
+    def test_save_megoldas_with_all_tracking_fields(self, repo, feladat_matek):
+        from sqlalchemy.orm import Session
+        from felvi_games.db import MegoldasRecord
+        repo.upsert(feladat_matek)
+        repo.get_or_create_felhasznalo("Zoli")
+        mid = repo.start_menet("Zoli", "matek", "mind", 10)
+        repo.save_megoldas(
+            feladat_matek, "42", Ertekeles(True, "Helyes!", 9),
+            felhasznalo_nev="Zoli",
+            menet_id=mid,
+            elapsed_sec=12.5,
+            segitseg_kert=True,
+            hibajelezes=False,
+        )
+        with Session(repo._engine) as session:
+            record = session.query(MegoldasRecord).first()
+        assert record.felhasznalo_nev == "Zoli"
+        assert record.menet_id == mid
+        assert record.elapsed_sec == 12.5
+        assert record.segitseg_kert is True
+        assert record.hibajelezes is False
+
+    def test_save_megoldas_defaults_backward_compatible(self, repo, feladat_matek):
+        """Existing call sites without new kwargs must still work."""
+        repo.upsert(feladat_matek)
+        repo.save_megoldas(feladat_matek, "42", Ertekeles(True, "OK", 9))
+        stats = repo.stats()
+        assert stats["total_attempts"] == 1
