@@ -1,0 +1,150 @@
+{
+  "matek": [
+    {
+      "id": "m01",
+      "neh": 1,
+      "szint": "6 osztályos",
+      "kerdes": "Egy dobozban 48 alma van. Az almák egyharmadát kivesszük. Hány alma marad a dobozban?",
+      "helyes_valasz": "32",
+      "hint": "Számold ki, mennyi az egyharmad, majd vond ki az eredetiből.",
+      "magyarazat": "48 egyharmada 16. Tehát 48 mínusz 16 egyenlő 32 alma marad."
+    },
+    {
+      "id": "m02",
+      "neh": 1,
+      "szint": "6 osztályos",
+      "kerdes": "Melyik szám az, amelynek kétszerese 36?",
+      "helyes_valasz": "18",
+      "hint": "Ha valaminek a kétszerese 36, osztd el 36-ot kettővel.",
+      "magyarazat": "36 osztva 2-vel egyenlő 18. Ellenőrzés: 18 kétszerese valóban 36."
+    },
+    {
+      "id": "m03",
+      "neh": 2,
+      "szint": "6 osztályos",
+      "kerdes": "Egy négyzet kerülete 28 centiméter. Mekkora a négyzet területe?",
+      "helyes_valasz": "49",
+      "hint": "Először számold ki az oldalhosszt a kerületből, majd emeld négyzetre.",
+      "magyarazat": "A kerület 4-szer az oldal, tehát az oldal 28 osztva 4-gyel egyenlő 7 cm. A terület 7 négyzeten, vagyis 49 négyzetcentiméter."
+    },
+    {
+      "id": "m04",
+      "neh": 2,
+      "szint": "8 osztályos",
+      "kerdes": "Egy áruból 20%-os kedvezménnyel 4800 forintot kell fizetni. Mi volt az eredeti ár?",
+      "helyes_valasz": "6000",
+      "hint": "Ha 20%-ot levontak, akkor a fizetett összeg az eredeti ár 80%-a.",
+      "magyarazat": "4800 forint az eredeti ár 80%-a. Tehát az eredeti ár 4800 osztva 0,8-cal, vagyis 6000 forint."
+    },
+    {
+      "id": "m05",
+      "neh": 3,
+      "szint": "8 osztályos",
+      "kerdes": "Péter kétszer annyi idős, mint Kata volt 3 évvel ezelőtt. Ha Kata most 12 éves, hány éves Péter?",
+      "helyes_valasz": "18",
+      "hint": "Kata 3 évvel ezelőtt 12 mínusz 3 éves volt. Péter kora ennek a kétszerese.",
+      "magyarazat": "Kata 3 évvel ezelőtt 9 éves volt. Péter kora ennek kétszerese: 9 szorozva 2-vel egyenlő 18 év."
+    },
+    {
+      "id": "m06",
+      "neh": 1,
+      "szint": "6 osztályos",
+      "kerdes": "Hány perc van 2 és fél óra alatt?",
+      "helyes_valasz": "150",
+      "hint": "1 óra 60 perc. Számold ki 2,5 szorozva 60-cal.",
+      "magyarazat": "2 és fél óra egyenlő 2,5 szorozva 60-cal, ami 150 perc."
+    },
+    {
+      "id": "m07",
+      "neh": 2,
+      "szint": "6 osztályos",
+      "kerdes": "Az osztályban 30 tanuló van. 60%-uk lány. Hány fiú van az osztályban?",
+      "helyes_valasz": "12",
+      "hint": "Ha 60% lány, akkor 40% fiú. Számold ki 30 szorozva 0,4-gyel.",
+      "magyarazat": "A lányok aránya 60%, tehát a fiúké 40%. 30-nak a 40%-a: 30 szorozva 0,4-gyel egyenlő 12 fiú."
+    },
+    {
+      "id": "m08",
+      "neh": 3,
+      "szint": "8 osztályos",
+      "kerdes": "Melyik a következő szám a sorozatban? 2, 6, 18, 54, ...",
+      "helyes_valasz": "162",
+      "hint": "Figyeld meg, hogy minden tagot mivel kell megszorozni, hogy a következőt kapjuk.",
+      "magyarazat": "Minden tag háromszorosa az előzőnek. 54 szorozva 3-mal egyenlő 162."
+    }
+  ],
+  "magyar": [
+    {
+      "id": "ny01",
+      "neh": 1,
+      "szint": "6 osztályos",
+      "kerdes": "Mi a következő szó szófaja? 'fut'",
+      "helyes_valasz": "ige",
+      "hint": "Gondolj arra, hogy mi a szó jelentése - cselekvést fejez ki?",
+      "magyarazat": "A 'fut' cselekvést jelölő szó, tehát ige."
+    },
+    {
+      "id": "ny02",
+      "neh": 1,
+      "szint": "6 osztályos",
+      "kerdes": "Helyesírás: 'egyelőre' vagy 'egyenlőre' - melyik a helyes alak?",
+      "helyes_valasz": "egyelőre",
+      "hint": "Az 'egyelőre' szó az 'egy' + 'előre' összetételéből ered, és azt jelenti: mostanához képest.",
+      "magyarazat": "A helyes alak 'egyelőre', ami azt jelenti: 'most, pillanatnyilag'. Az 'egyenlőre' nem létező szó."
+    },
+    {
+      "id": "ny03",
+      "neh": 2,
+      "szint": "6 osztályos",
+      "kerdes": "Milyen mondatrész a következő mondatban a kiemelt szó? 'A piros alma leesett a fáról.' - a 'piros' szó.",
+      "helyes_valasz": "jelző",
+      "hint": "A szó az 'alma' főnévhez kapcsolódik és annak tulajdonságát fejezi ki.",
+      "magyarazat": "A 'piros' melléknév az 'alma' főnevet minősíti, tehát minőségjelző."
+    },
+    {
+      "id": "ny04",
+      "neh": 2,
+      "szint": "8 osztályos",
+      "kerdes": "Mi a következő szó toldaléka a 'kertekben' szóban?",
+      "helyes_valasz": "ben",
+      "hint": "A toldalék az a szóelem, amelyet az alapszóhoz hozzáragasztunk. A tő 'kert', a tbbes szám jele 'ek'.",
+      "magyarazat": "A 'kertekben' szót elemezve: kert (tő) + ek (többes szám jele) + ben (helyhatározó rag). A toldalék a 'ben' rag."
+    },
+    {
+      "id": "ny05",
+      "neh": 1,
+      "szint": "6 osztályos",
+      "kerdes": "Hány szótag van a 'barátság' szóban?",
+      "helyes_valasz": "3",
+      "hint": "Tapsolj a szótagokra: ba-rát-ság.",
+      "magyarazat": "A 'barátság' szó három szótagból áll: ba-rát-ság."
+    },
+    {
+      "id": "ny06",
+      "neh": 2,
+      "szint": "8 osztályos",
+      "kerdes": "Milyen stíluseszköz a következő kifejezés? 'A hold ezüst karikaként ragyogott.'",
+      "helyes_valasz": "hasonlat",
+      "hint": "Két dolgot hasonlítunk össze egy hasonlító szó segítségével.",
+      "magyarazat": "Ez egy hasonlat, mert a holdat ezüst karikához hasonlítja a 'mint' (karikaként) segítségével."
+    },
+    {
+      "id": "ny07",
+      "neh": 3,
+      "szint": "8 osztályos",
+      "kerdes": "Mi a különbség az 'ő' és az 'azok' névmások között?",
+      "helyes_valasz": "szám",
+      "hint": "Gondolj bele: az 'ő' egyre, az 'azok' többre utal.",
+      "magyarazat": "A különbség a szám: az 'ő' egyes szám harmadik személyű személyes névmás, az 'azok' pedig többes szám harmadik személyű mutató névmás."
+    },
+    {
+      "id": "ny08",
+      "neh": 2,
+      "szint": "6 osztályos",
+      "kerdes": "Melyik szó szinonimája a 'gyors' szónak?",
+      "helyes_valasz": "sebes",
+      "hint": "Gondolj olyan szóra, amely szintén valami mozgás sebességét fejezi ki hasonlóan.",
+      "magyarazat": "A 'sebes', 'fürge', 'villámgyors' mind szinonimái a 'gyors' szónak. A legközelebbi: sebes."
+    }
+  ]
+}
