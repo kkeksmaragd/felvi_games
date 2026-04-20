@@ -91,3 +91,23 @@ def relative_asset_path(
 def resolve_asset(relative_path: str) -> Path:
     """Relatív asset útvonalból abszolút Path."""
     return get_assets_dir() / relative_path
+
+
+# ---------------------------------------------------------------------------
+# Text cache helpers (intermediate PDF extraction results)
+# ---------------------------------------------------------------------------
+
+def text_cache_path(pdf_stem: str) -> Path:
+    """
+    Abszolút elérési út a PDF szöveg cache fájlhoz.
+    Példa: <assets_dir>/text/M8_2025_1_fl.txt
+    """
+    return get_assets_dir() / "text" / f"{pdf_stem}.txt"
+
+
+def relative_text_path(pdf_stem: str) -> str:
+    """
+    DB-be / modellbe mentendő relatív elérési út a szöveg cache-hez.
+    Példa: "text/M8_2025_1_fl.txt"
+    """
+    return f"text/{pdf_stem}.txt"

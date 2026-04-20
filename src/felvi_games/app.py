@@ -9,7 +9,7 @@ from pathlib import Path
 import streamlit as st
 
 from felvi_games.ai import check_answer, speech_to_text, text_to_speech
-from felvi_games.config import resolve_asset
+from felvi_games.config import resolve_asset, text_cache_path
 from felvi_games.db import FeladatRepository
 from felvi_games.models import KATEGORIA_INFO, Ertekeles, Fazis, Feladat, GameState
 
@@ -178,6 +178,12 @@ def _render_kerdes(gs: GameState) -> None:
     feladat: Feladat = gs.aktualis  # type: ignore[assignment]
     badge = "📐" if gs.targy == "matek" else "📖"
     st.subheader(f"{badge} {feladat.szint} — {feladat.neh_csillag()}")
+
+    # Shared preamble / context (reading passage, table, figure)
+    if feladat.kontextus:
+        with st.expander("📌 Közös kontextus (feladat alapja)", expanded=True):
+            st.markdown(feladat.kontextus)
+
     st.info(f"**{feladat.kerdes}**")
 
     col_tts, col_hint = st.columns(2)
@@ -198,6 +204,9 @@ def _render_kerdes(gs: GameState) -> None:
 
     if gs.tts_audio:
         st.audio(gs.tts_audio, format="audio/mp3", autoplay=True)
+
+    # Source text inspection
+    _render_source_expanders(feladat, show_ut=False)
 
     st.markdown("---")
     st.markdown("### Válaszolj:")
@@ -255,6 +264,9 @@ def _render_eredmeny(feladatok: dict[str, list[Feladat]], gs: GameState) -> None
         st.write(feladat.magyarazat)
         st.markdown(f"**Helyes válasz:** `{feladat.helyes_valasz}`")
 
+    # Source text inspection (both feladatlap and útmutató)
+    _render_source_expanders(feladat, show_ut=True)
+
     if st.button("🔊 Visszajelzés felolvasása"):
         with st.spinner("Hangszintézis..."):
             audio = text_to_speech(feladat.eredmeny_tts_szoveg(ert.visszajelzes))
@@ -288,6 +300,22 @@ def _render_eredmeny(feladatok: dict[str, list[Feladat]], gs: GameState) -> None
         if st.button("🏠 Főmenü", use_container_width=True):
             gs.fazis = Fazis.VALASZTAS
             st.rerun()
+
+
+def _render_source_expanders(feladat: Feladat, *, show_ut: bool) -> None:
+    """Optionally show the raw extracted PDF text for debugging / context."""
+    if feladat.fl_szoveg_path:
+        with st.expander("📄 Feladatlap szövege (forrás)"):
+            try:
+                st.text(resolve_asset(feladat.fl_szoveg_path).read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                st.caption(f"Fájl nem található: {feladat.fl_szoveg_path}")
+    if show_ut and feladat.ut_szoveg_path:
+        with st.expander("📋 Javítási útmutató szövege (forrás)"):
+            try:
+                st.text(resolve_asset(feladat.ut_szoveg_path).read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                st.caption(f"Fájl nem található: {feladat.ut_szoveg_path}")
 
 
 # ---------------------------------------------------------------------------

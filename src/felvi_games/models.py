@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING
@@ -35,6 +36,10 @@ class Feladat:
     # --- compiled assets (optional, cached after first use) ---
     tts_kerdes_path: str | None = None      # relative path to TTS MP3 for the question
     tts_magyarazat_path: str | None = None  # relative path to TTS MP3 for the explanation
+    # --- extraction context ---
+    kontextus: str | None = None            # shared preamble/table/figure text (GPT-extracted)
+    fl_szoveg_path: str | None = None       # relative path to cached feladatlap plain text
+    ut_szoveg_path: str | None = None       # relative path to cached útmutató plain text
 
     @classmethod
     def from_dict(cls, d: dict, targy: str = "") -> "Feladat":
@@ -54,6 +59,7 @@ class Feladat:
             ev=int(ev_raw) if ev_raw is not None else None,
             valtozat=int(val_raw) if val_raw is not None else None,
             feladat_sorszam=d.get("feladat_sorszam"),
+            kontextus=d.get("kontextus"),
         )
     @classmethod
     def from_record(cls, r: "FeladatRecord") -> "Feladat":
@@ -73,6 +79,9 @@ class Feladat:
             feladat_sorszam=r.feladat_sorszam,
             tts_kerdes_path=r.tts_kerdes_path,
             tts_magyarazat_path=r.tts_magyarazat_path,
+            kontextus=r.kontextus,
+            fl_szoveg_path=r.fl_szoveg_path,
+            ut_szoveg_path=r.ut_szoveg_path,
         )
 
     def with_assets(
@@ -81,20 +90,8 @@ class Feladat:
         tts_magyarazat_path: str | None = None,
     ) -> "Feladat":
         """Return a new Feladat with updated asset path fields (frozen → copy)."""
-        return Feladat(
-            id=self.id,
-            neh=self.neh,
-            szint=self.szint,
-            kerdes=self.kerdes,
-            helyes_valasz=self.helyes_valasz,
-            hint=self.hint,
-            magyarazat=self.magyarazat,
-            targy=self.targy,
-            pdf_source=self.pdf_source,
-            ut_source=self.ut_source,
-            ev=self.ev,
-            valtozat=self.valtozat,
-            feladat_sorszam=self.feladat_sorszam,
+        return dataclasses.replace(
+            self,
             tts_kerdes_path=tts_kerdes_path if tts_kerdes_path is not None else self.tts_kerdes_path,
             tts_magyarazat_path=tts_magyarazat_path if tts_magyarazat_path is not None else self.tts_magyarazat_path,
         )

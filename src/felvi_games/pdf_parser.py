@@ -24,11 +24,13 @@ import re
 import sys
 from pathlib import Path
 from typing import Iterator
+import dataclasses
 
 import pdftotext
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from felvi_games.config import relative_text_path, text_cache_path
 from felvi_games.db import FeladatRepository
 from felvi_games.models import Feladat
 
@@ -73,8 +75,8 @@ _SYSTEM_PROMPT = """\
 Felvételi feladatsor elemző vagy. Feladatlapot és javítási útmutatót kapod.
 Minden egyes részfeladatból (pl. 1a, 1b, 2a…) ONE JSON objektumot generálj.
 Komplex számítási/rajz/táblázat feladatokat egyszerűsítsd: a kérdést úgy fogalmazd,
-hogy szövegesen (egy válasszal) megválaszolható legyen, és add meg a helyes választ is.
-"""
+hogy szövegesen (egy válasszal) megválaszolható legyen, és add meg a helyes választ is.Fontos: ha több részfeladat egyazon bevezető szövegre, ábrára vagy táblázatra hivatkozik,
+minden érintett feladat kontextus mezőjébe másold be a teljes közös részt."""
 
 _USER_TEMPLATE = """\
 ## Sorozat adatok
@@ -100,6 +102,8 @@ Az érték egy lista; minden elem tartalmazza:
 - "magyarazat": string – rövid magyarázat miért helyes (max 2 mondat)
 - "neh": int – nehézség 1–3 ({neh_scale})
 - "szint": "9 osztályos"
+- "kontextus": string | null – ha a feladat egy közös bevezető szövegre, ábrára vagy
+  táblázatra hivatkozik, ide másold be a teljes közös szöveget; egyébként null
 
 A szöveg magyar; hagyj minden szaktermint, nevet, számot magyarul.
 Ne generálj feladatot, ha a szövegből nem olvasható ki egyértelműen a helyes válasz.
@@ -241,6 +245,7 @@ def _dict_to_feladat(d: dict) -> Feladat:
         ev=int(ev_raw) if ev_raw is not None else None,
         valtozat=int(val_raw) if val_raw is not None else None,
         feladat_sorszam=str(raw_sorszam) if raw_sorszam else None,
+        kontextus=str(d["kontextus"]) if d.get("kontextus") else None,
     )
 
 
@@ -301,6 +306,7 @@ def _print_feladat(f: Feladat) -> None:
         ("ev / valtozat", f"{f.ev or '-'} / {f.valtozat or '-'}"),
         ("pdf_source", f.pdf_source or "-"),
         ("ut_source", f.ut_source or "-"),
+        ("kontextus", (f.kontextus[:120] + "…") if f.kontextus and len(f.kontextus) > 120 else (f.kontextus or "-")),
         ("kerdes", f.kerdes),
         ("helyes_valasz", f.helyes_valasz),
         ("hint", f.hint),
@@ -390,12 +396,30 @@ def parse_exam(
     """Full pipeline for one exam pair: pdf→text→GPT→Feladat list (no review, no DB)."""
     fl_text = pdf_to_text(fl_path)
     ut_text = pdf_to_text(ut_path)
-    return extract_feladatok(
+
+    # Persist extracted text for later inspection
+    fl_rel = _save_text_cache(fl_text, fl_path.stem)
+    ut_rel = _save_text_cache(ut_text, ut_path.stem)
+
+    feladatok = extract_feladatok(
         fl_text, ut_text, targy,
         pdf_source=fl_path.name,
         ut_source=ut_path.name,
         model=model,
     )
+    # Attach text-cache paths to every extracted feladat
+    return [
+        dataclasses.replace(f, fl_szoveg_path=fl_rel, ut_szoveg_path=ut_rel)
+        for f in feladatok
+    ]
+
+
+def _save_text_cache(text: str, pdf_stem: str) -> str:
+    """Write extracted plain text to the assets text cache, return relative path."""
+    path = text_cache_path(pdf_stem)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return relative_text_path(pdf_stem)
 
 
 # ---------------------------------------------------------------------------

@@ -77,6 +77,11 @@ class FeladatRecord(Base):
     tts_kerdes_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     tts_magyarazat_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
+    # Extraction context
+    kontextus: Mapped[str | None] = mapped_column(Text, nullable=True)
+    fl_szoveg_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    ut_szoveg_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
@@ -156,6 +161,12 @@ class FeladatRepository:
                     existing.tts_kerdes_path = feladat.tts_kerdes_path
                 if feladat.tts_magyarazat_path is not None:
                     existing.tts_magyarazat_path = feladat.tts_magyarazat_path
+                if feladat.kontextus is not None:
+                    existing.kontextus = feladat.kontextus
+                if feladat.fl_szoveg_path is not None:
+                    existing.fl_szoveg_path = feladat.fl_szoveg_path
+                if feladat.ut_szoveg_path is not None:
+                    existing.ut_szoveg_path = feladat.ut_szoveg_path
                 existing.updated_at = datetime.now(timezone.utc)
             else:
                 session.add(FeladatRecord(
@@ -174,6 +185,9 @@ class FeladatRepository:
                     feladat_sorszam=feladat.feladat_sorszam,
                     tts_kerdes_path=feladat.tts_kerdes_path,
                     tts_magyarazat_path=feladat.tts_magyarazat_path,
+                    kontextus=feladat.kontextus,
+                    fl_szoveg_path=feladat.fl_szoveg_path,
+                    ut_szoveg_path=feladat.ut_szoveg_path,
                 ))
             session.commit()
 
@@ -202,6 +216,9 @@ class FeladatRepository:
                         feladat_sorszam=f.feladat_sorszam,
                         tts_kerdes_path=f.tts_kerdes_path,
                         tts_magyarazat_path=f.tts_magyarazat_path,
+                        kontextus=f.kontextus,
+                        fl_szoveg_path=f.fl_szoveg_path,
+                        ut_szoveg_path=f.ut_szoveg_path,
                         updated_at=now,
                     ))
                 else:
@@ -216,6 +233,9 @@ class FeladatRepository:
                         feladat_sorszam=f.feladat_sorszam,
                         tts_kerdes_path=f.tts_kerdes_path,
                         tts_magyarazat_path=f.tts_magyarazat_path,
+                        kontextus=f.kontextus,
+                        fl_szoveg_path=f.fl_szoveg_path,
+                        ut_szoveg_path=f.ut_szoveg_path,
                     ))
             session.commit()
 
