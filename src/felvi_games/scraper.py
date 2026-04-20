@@ -74,7 +74,7 @@ REQUEST_DELAY = 0.8
 
 # Bulk ZIP letöltési URL-ek évfolyamonként
 BULK_ZIPS = {
-    "9": (
+    "4": (
         "https://www.oktatas.hu/pub_bin/dload/kozoktatas/beiskolazas/"
         "feladatsorok/felveteli_feladatsorok_9_evfolyamra.zip",
         "9_evfolyam",
@@ -90,6 +90,12 @@ BULK_ZIPS = {
         "6_osztaly",
     ),
 }
+
+# CLI kulcs → mappa neve (KATEGORIA_INFO-ból vezetve le)
+_CLI_TO_MAPPA: dict[str, str] = {
+    info.cli_kulcs: kulcs.value for kulcs, info in KATEGORIA_INFO.items()
+}
+_CLI_KULCSOK: list[str] = list(_CLI_TO_MAPPA.keys())
 
 # ---------------------------------------------------------------------------
 # Segédfüggvények
@@ -329,9 +335,9 @@ def main():
     )
     parser.add_argument(
         "--only",
-        choices=["6", "8", "9"],
+        choices=_CLI_KULCSOK,
         default=None,
-        help="Csak egy kategória: 6, 8 vagy 9",
+        help="Csak egy kategória: 4 (4 oszt.), 6 (6 oszt.) vagy 8 (8 oszt.)",
     )
     parser.add_argument(
         "--dry-run",
@@ -371,9 +377,7 @@ def main():
 
     # Szűrés kategóriára
     if args.only:
-        kat_filter = {"6": "6_osztaly", "8": "8_osztaly", "9": "9_evfolyam"}[
-            args.only
-        ]
+        kat_filter = _CLI_TO_MAPPA[args.only]
         year_links = [l for l in year_links if l["kategoria"] == kat_filter]
 
     # Szűrés évre

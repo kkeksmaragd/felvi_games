@@ -9,8 +9,9 @@ from pathlib import Path
 import streamlit as st
 
 from felvi_games.ai import check_answer, speech_to_text, text_to_speech
+from felvi_games.config import resolve_asset
 from felvi_games.db import FeladatRepository
-from felvi_games.models import Ertekeles, Fazis, Feladat, GameState
+from felvi_games.models import KATEGORIA_INFO, Ertekeles, Fazis, Feladat, GameState
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -18,7 +19,10 @@ from felvi_games.models import Ertekeles, Fazis, Feladat, GameState
 
 _DATA_DIR = Path(__file__).parent.parent.parent / "data"
 _TARGYAK = ["matek", "magyar"]
-_SZINTEK = ["mind", "6 osztályos", "8 osztályos", "9 osztályos"]
+_SZINTEK = ["mind"] + [info.szint_ertek for info in KATEGORIA_INFO.values()]
+_SZINT_CIMKEK: dict[str, str] = {"mind": "🌟 Mind"} | {
+    info.szint_ertek: info.rovid for info in KATEGORIA_INFO.values()
+}
 
 # ---------------------------------------------------------------------------
 # Repository (singleton per process)
@@ -85,16 +89,16 @@ def next_feladat(feladatok: dict[str, list[Feladat]], gs: GameState) -> Feladat 
 
 
 def start_kerdes(feladat: Feladat, gs: GameState) -> None:
-    # Reload from DB so pre-rendered TTS bytes are present
+    # Reload from DB so asset paths are current
     fresh = get_repo().get(feladat.id)
     gs.aktualis = fresh if fresh else feladat
     gs.fazis = Fazis.KERDES
     gs.atiras = ""
     gs.ertekeles = None
     gs.tts_audio = None
-    # Auto-populate session audio from DB cache
-    if gs.aktualis and gs.aktualis.tts_kerdes:
-        gs.tts_audio = gs.aktualis.tts_kerdes
+    # Auto-load cached TTS from file if available
+    if gs.aktualis and gs.aktualis.tts_kerdes_path:
+        gs.tts_audio = resolve_asset(gs.aktualis.tts_kerdes_path).read_bytes()
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +149,7 @@ def _render_valasztas(
         gs.szint = st.radio(
             "Szint",
             options=_SZINTEK,
-            format_func=lambda x: "🌟 Mind" if x == "mind" else x,
+            format_func=lambda x: _SZINT_CIMKEK.get(x, x),
             index=_SZINTEK.index(gs.szint) if gs.szint in _SZINTEK else 0,
             horizontal=True,
         )
@@ -179,16 +183,14 @@ def _render_kerdes(gs: GameState) -> None:
     col_tts, col_hint = st.columns(2)
     with col_tts:
         if st.button("🔊 Feladat felolvasása"):
-            if feladat.tts_kerdes:
-                # Use cached audio from DB, no API call needed
-                gs.tts_audio = feladat.tts_kerdes
+            if feladat.tts_kerdes_path:
+                gs.tts_audio = resolve_asset(feladat.tts_kerdes_path).read_bytes()
             else:
                 with st.spinner("Hangszintézis..."):
                     audio = text_to_speech(feladat.tts_szoveg())
                     gs.tts_audio = audio
-                    get_repo().save_tts_assets(feladat.id, tts_kerdes=audio)
-                    # Update session feladat so the cache check works if clicked again
-                    gs.aktualis = feladat.with_assets(tts_kerdes=audio)
+                    updated = get_repo().save_tts_assets(feladat, tts_kerdes=audio)
+                    gs.aktualis = updated
             st.rerun()
     with col_hint:
         if st.button("💡 Tipp"):
@@ -259,14 +261,14 @@ def _render_eredmeny(feladatok: dict[str, list[Feladat]], gs: GameState) -> None
         st.audio(audio, format="audio/mp3", autoplay=True)
 
     if st.button("📚 Magyarázat felolvasása"):
-        if feladat.tts_magyarazat:
-            st.audio(feladat.tts_magyarazat, format="audio/mp3", autoplay=True)
+        if feladat.tts_magyarazat_path:
+            st.audio(resolve_asset(feladat.tts_magyarazat_path).read_bytes(), format="audio/mp3", autoplay=True)
         else:
             with st.spinner("Hangszintézis..."):
                 mag_szoveg = f"A helyes válasz: {feladat.helyes_valasz}. {feladat.magyarazat}"
                 audio = text_to_speech(mag_szoveg)
-                get_repo().save_tts_assets(feladat.id, tts_magyarazat=audio)
-                gs.aktualis = feladat.with_assets(tts_magyarazat=audio)
+                updated = get_repo().save_tts_assets(feladat, tts_magyarazat=audio)
+                gs.aktualis = updated
             st.audio(audio, format="audio/mp3", autoplay=True)
 
     st.divider()

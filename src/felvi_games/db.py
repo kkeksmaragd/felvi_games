@@ -11,7 +11,6 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
-    LargeBinary,
     String,
     Text,
     create_engine,
@@ -25,18 +24,23 @@ from sqlalchemy.orm import (
     relationship,
 )
 
+from felvi_games.config import (
+    get_assets_dir,
+    get_db_path,
+    relative_asset_path,
+    resolve_asset,
+)
 from felvi_games.models import Ertekeles, Feladat
 
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
 
-_DB_PATH = Path(__file__).parent.parent.parent / "data" / "felvi.db"
 
-
-def get_engine(db_path: Path = _DB_PATH):
-    _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    return create_engine(f"sqlite:///{db_path}", echo=False)
+def get_engine(db_path: Path | None = None):
+    path = db_path or get_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return create_engine(f"sqlite:///{path}", echo=False)
 
 
 # ---------------------------------------------------------------------------
@@ -69,9 +73,9 @@ class FeladatRecord(Base):
     valtozat: Mapped[int | None] = mapped_column(Integer, nullable=True)
     feladat_sorszam: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
-    # Compiled TTS assets (stored as raw MP3 bytes)
-    tts_kerdes: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
-    tts_magyarazat: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    # Compiled TTS assets – relative paths to MP3 files under assets_dir
+    tts_kerdes_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    tts_magyarazat_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
     # Timestamps
     created_at: Mapped[datetime] = mapped_column(
@@ -112,7 +116,7 @@ class MegoldasRecord(Base):
     feladat: Mapped["FeladatRecord"] = relationship(back_populates="megoldasok")
 
 
-def init_db(db_path: Path = _DB_PATH) -> None:
+def init_db(db_path: Path | None = None) -> None:
     """Create all tables if they don't exist."""
     Base.metadata.create_all(get_engine(db_path))
 
@@ -125,7 +129,7 @@ def init_db(db_path: Path = _DB_PATH) -> None:
 class FeladatRepository:
     """CRUD + asset operations for Feladat persistence."""
 
-    def __init__(self, db_path: Path = _DB_PATH) -> None:
+    def __init__(self, db_path: Path | None = None) -> None:
         self._engine = get_engine(db_path)
         init_db(db_path)
 
@@ -148,10 +152,10 @@ class FeladatRepository:
                 existing.ev = feladat.ev
                 existing.valtozat = feladat.valtozat
                 existing.feladat_sorszam = feladat.feladat_sorszam
-                if feladat.tts_kerdes is not None:
-                    existing.tts_kerdes = feladat.tts_kerdes
-                if feladat.tts_magyarazat is not None:
-                    existing.tts_magyarazat = feladat.tts_magyarazat
+                if feladat.tts_kerdes_path is not None:
+                    existing.tts_kerdes_path = feladat.tts_kerdes_path
+                if feladat.tts_magyarazat_path is not None:
+                    existing.tts_magyarazat_path = feladat.tts_magyarazat_path
                 existing.updated_at = datetime.now(timezone.utc)
             else:
                 session.add(FeladatRecord(
@@ -168,8 +172,8 @@ class FeladatRepository:
                     ev=feladat.ev,
                     valtozat=feladat.valtozat,
                     feladat_sorszam=feladat.feladat_sorszam,
-                    tts_kerdes=feladat.tts_kerdes,
-                    tts_magyarazat=feladat.tts_magyarazat,
+                    tts_kerdes_path=feladat.tts_kerdes_path,
+                    tts_magyarazat_path=feladat.tts_magyarazat_path,
                 ))
             session.commit()
 
@@ -196,8 +200,8 @@ class FeladatRepository:
                         ev=f.ev,
                         valtozat=f.valtozat,
                         feladat_sorszam=f.feladat_sorszam,
-                        tts_kerdes=f.tts_kerdes,
-                        tts_magyarazat=f.tts_magyarazat,
+                        tts_kerdes_path=f.tts_kerdes_path,
+                        tts_magyarazat_path=f.tts_magyarazat_path,
                         updated_at=now,
                     ))
                 else:
@@ -210,8 +214,8 @@ class FeladatRepository:
                         ev=f.ev,
                         valtozat=f.valtozat,
                         feladat_sorszam=f.feladat_sorszam,
-                        tts_kerdes=f.tts_kerdes,
-                        tts_magyarazat=f.tts_magyarazat,
+                        tts_kerdes_path=f.tts_kerdes_path,
+                        tts_magyarazat_path=f.tts_magyarazat_path,
                     ))
             session.commit()
 
@@ -237,26 +241,54 @@ class FeladatRepository:
 
     def save_tts_assets(
         self,
-        feladat_id: str,
+        feladat: Feladat,
         tts_kerdes: bytes | None = None,
         tts_magyarazat: bytes | None = None,
-    ) -> None:
-        """Persist pre-rendered TTS blobs for a feladat."""
+    ) -> Feladat:
+        """
+        Write TTS bytes to files and persist the relative paths in the DB.
+        Returns an updated Feladat with the new path fields set.
+        """
         with Session(self._engine) as session:
-            record = session.get(FeladatRecord, feladat_id)
+            record = session.get(FeladatRecord, feladat.id)
             if record is None:
-                raise KeyError(f"Feladat not found: {feladat_id}")
+                raise KeyError(f"Feladat not found: {feladat.id}")
+
+            new_kerdes_path: str | None = None
+            new_magyarazat_path: str | None = None
+
             if tts_kerdes is not None:
-                record.tts_kerdes = tts_kerdes
+                rel = relative_asset_path(feladat.id, "kerdes", feladat.szint, feladat.ev, feladat.valtozat)
+                abs_path = resolve_asset(rel)
+                abs_path.parent.mkdir(parents=True, exist_ok=True)
+                abs_path.write_bytes(tts_kerdes)
+                record.tts_kerdes_path = rel
+                new_kerdes_path = rel
+
             if tts_magyarazat is not None:
-                record.tts_magyarazat = tts_magyarazat
+                rel = relative_asset_path(feladat.id, "magyarazat", feladat.szint, feladat.ev, feladat.valtozat)
+                abs_path = resolve_asset(rel)
+                abs_path.parent.mkdir(parents=True, exist_ok=True)
+                abs_path.write_bytes(tts_magyarazat)
+                record.tts_magyarazat_path = rel
+                new_magyarazat_path = rel
+
             record.updated_at = datetime.now(timezone.utc)
             session.commit()
+
+        return feladat.with_assets(
+            tts_kerdes_path=new_kerdes_path,
+            tts_magyarazat_path=new_magyarazat_path,
+        )
+
+    def load_tts_bytes(self, relative_path: str) -> bytes:
+        """Read TTS MP3 bytes from the asset file."""
+        return resolve_asset(relative_path).read_bytes()
 
     def missing_tts(self, targy: str | None = None) -> Sequence[Feladat]:
         """Return feladatok that have no pre-rendered TTS audio yet."""
         with Session(self._engine) as session:
-            stmt = select(FeladatRecord).where(FeladatRecord.tts_kerdes.is_(None))
+            stmt = select(FeladatRecord).where(FeladatRecord.tts_kerdes_path.is_(None))
             if targy:
                 stmt = stmt.where(FeladatRecord.targy == targy)
             return [r.to_domain() for r in session.scalars(stmt)]

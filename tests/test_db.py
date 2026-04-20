@@ -148,47 +148,53 @@ class TestAll:
 class TestTtsAssets:
     def test_save_and_retrieve_tts_kerdes(self, repo, feladat_matek):
         repo.upsert(feladat_matek)
-        repo.save_tts_assets(feladat_matek.id, tts_kerdes=b"mp3_kerdes")
+        repo.save_tts_assets(feladat_matek, tts_kerdes=b"mp3_kerdes")
         result = repo.get(feladat_matek.id)
-        assert result.tts_kerdes == b"mp3_kerdes"
+        assert result.tts_kerdes_path is not None
+        assert repo.load_tts_bytes(result.tts_kerdes_path) == b"mp3_kerdes"
 
     def test_save_and_retrieve_tts_magyarazat(self, repo, feladat_matek):
         repo.upsert(feladat_matek)
-        repo.save_tts_assets(feladat_matek.id, tts_magyarazat=b"mp3_mag")
+        repo.save_tts_assets(feladat_matek, tts_magyarazat=b"mp3_mag")
         result = repo.get(feladat_matek.id)
-        assert result.tts_magyarazat == b"mp3_mag"
+        assert result.tts_magyarazat_path is not None
+        assert repo.load_tts_bytes(result.tts_magyarazat_path) == b"mp3_mag"
 
     def test_save_both_assets_at_once(self, repo, feladat_matek):
         repo.upsert(feladat_matek)
-        repo.save_tts_assets(feladat_matek.id, tts_kerdes=b"k", tts_magyarazat=b"m")
+        repo.save_tts_assets(feladat_matek, tts_kerdes=b"k", tts_magyarazat=b"m")
         result = repo.get(feladat_matek.id)
-        assert result.tts_kerdes == b"k"
-        assert result.tts_magyarazat == b"m"
+        assert repo.load_tts_bytes(result.tts_kerdes_path) == b"k"
+        assert repo.load_tts_bytes(result.tts_magyarazat_path) == b"m"
 
     def test_save_tts_does_not_overwrite_other_asset_with_none(self, repo, feladat_matek):
         repo.upsert(feladat_matek)
-        repo.save_tts_assets(feladat_matek.id, tts_kerdes=b"k")
-        # Only update magyarazat; kerdes must stay intact
-        repo.save_tts_assets(feladat_matek.id, tts_magyarazat=b"m")
+        updated = repo.save_tts_assets(feladat_matek, tts_kerdes=b"k")
+        # Only update magyarazat; kerdes path must stay intact
+        repo.save_tts_assets(updated, tts_magyarazat=b"m")
         result = repo.get(feladat_matek.id)
-        assert result.tts_kerdes == b"k"
-        assert result.tts_magyarazat == b"m"
+        assert result.tts_kerdes_path is not None
+        assert result.tts_magyarazat_path is not None
+        assert repo.load_tts_bytes(result.tts_kerdes_path) == b"k"
+        assert repo.load_tts_bytes(result.tts_magyarazat_path) == b"m"
 
     def test_save_tts_raises_for_unknown_id(self, repo):
+        nonexistent = _make_feladat("nonexistent")
         with pytest.raises(KeyError):
-            repo.save_tts_assets("nonexistent", tts_kerdes=b"x")
+            repo.save_tts_assets(nonexistent, tts_kerdes=b"x")
 
     def test_missing_tts_returns_feladatok_without_audio(self, repo):
-        repo.upsert(_make_feladat("m01"))
+        m01 = _make_feladat("m01")
+        repo.upsert(m01)
         repo.upsert(_make_feladat("m02"))
-        repo.save_tts_assets("m01", tts_kerdes=b"audio")
+        repo.save_tts_assets(m01, tts_kerdes=b"audio")
         missing = repo.missing_tts()
         assert len(missing) == 1
         assert missing[0].id == "m02"
 
     def test_missing_tts_empty_when_all_have_audio(self, repo, feladat_matek):
         repo.upsert(feladat_matek)
-        repo.save_tts_assets(feladat_matek.id, tts_kerdes=b"audio")
+        repo.save_tts_assets(feladat_matek, tts_kerdes=b"audio")
         assert repo.missing_tts() == []
 
     def test_missing_tts_filters_by_targy(self, repo, feladat_matek, feladat_magyar):
@@ -199,10 +205,10 @@ class TestTtsAssets:
         assert missing_matek[0].id == feladat_matek.id
 
     def test_upsert_with_assets_persists_them(self, repo):
-        f = _make_feladat("m01").with_assets(tts_kerdes=b"audio")
+        f = _make_feladat("m01").with_assets(tts_kerdes_path="subfolder/m01_kerdes.mp3")
         repo.upsert(f)
         result = repo.get("m01")
-        assert result.tts_kerdes == b"audio"
+        assert result.tts_kerdes_path == "subfolder/m01_kerdes.mp3"
 
 
 # ---------------------------------------------------------------------------
@@ -275,17 +281,17 @@ class TestMegoldas:
 
 class TestFeladatWithAssets:
     def test_with_assets_returns_new_instance(self, feladat_matek):
-        updated = feladat_matek.with_assets(tts_kerdes=b"audio")
+        updated = feladat_matek.with_assets(tts_kerdes_path="sub/m_test_01_kerdes.mp3")
         assert updated is not feladat_matek
 
     def test_with_assets_sets_tts_kerdes(self, feladat_matek):
-        updated = feladat_matek.with_assets(tts_kerdes=b"k")
-        assert updated.tts_kerdes == b"k"
+        updated = feladat_matek.with_assets(tts_kerdes_path="sub/k.mp3")
+        assert updated.tts_kerdes_path == "sub/k.mp3"
 
     def test_with_assets_preserves_unset_field(self, feladat_matek):
-        updated = feladat_matek.with_assets(tts_kerdes=b"k")
-        assert updated.tts_magyarazat is None
+        updated = feladat_matek.with_assets(tts_kerdes_path="sub/k.mp3")
+        assert updated.tts_magyarazat_path is None
 
     def test_with_assets_does_not_mutate_original(self, feladat_matek):
-        feladat_matek.with_assets(tts_kerdes=b"k")
-        assert feladat_matek.tts_kerdes is None
+        feladat_matek.with_assets(tts_kerdes_path="sub/k.mp3")
+        assert feladat_matek.tts_kerdes_path is None

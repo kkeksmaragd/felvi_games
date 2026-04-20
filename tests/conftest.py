@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from felvi_games.db import FeladatRepository
@@ -16,7 +18,13 @@ from felvi_games.models import Ertekeles, Feladat
 @pytest.fixture
 def repo(tmp_path):
     """An isolated in-memory-backed repository for each test."""
-    return FeladatRepository(db_path=tmp_path / "test.db")
+    db = tmp_path / "test.db"
+    assets = tmp_path / "assets"
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("FELVI_DB", str(db))
+    monkeypatch.setenv("FELVI_ASSETS", str(assets))
+    yield FeladatRepository(db_path=db)
+    monkeypatch.undo()
 
 
 @pytest.fixture

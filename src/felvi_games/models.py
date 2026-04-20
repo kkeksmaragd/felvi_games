@@ -33,8 +33,8 @@ class Feladat:
     valtozat: int | None = None          # variant within year (1 or 2)
     feladat_sorszam: str | None = None   # position in exam (e.g. "1a", "2b", "3")
     # --- compiled assets (optional, cached after first use) ---
-    tts_kerdes: bytes | None = None      # pre-rendered TTS for the question
-    tts_magyarazat: bytes | None = None  # pre-rendered TTS for the explanation
+    tts_kerdes_path: str | None = None      # relative path to TTS MP3 for the question
+    tts_magyarazat_path: str | None = None  # relative path to TTS MP3 for the explanation
 
     @classmethod
     def from_dict(cls, d: dict, targy: str = "") -> "Feladat":
@@ -55,7 +55,6 @@ class Feladat:
             valtozat=int(val_raw) if val_raw is not None else None,
             feladat_sorszam=d.get("feladat_sorszam"),
         )
-
     @classmethod
     def from_record(cls, r: "FeladatRecord") -> "Feladat":
         return cls(
@@ -72,16 +71,16 @@ class Feladat:
             ev=r.ev,
             valtozat=r.valtozat,
             feladat_sorszam=r.feladat_sorszam,
-            tts_kerdes=r.tts_kerdes,
-            tts_magyarazat=r.tts_magyarazat,
+            tts_kerdes_path=r.tts_kerdes_path,
+            tts_magyarazat_path=r.tts_magyarazat_path,
         )
 
     def with_assets(
         self,
-        tts_kerdes: bytes | None = None,
-        tts_magyarazat: bytes | None = None,
+        tts_kerdes_path: str | None = None,
+        tts_magyarazat_path: str | None = None,
     ) -> "Feladat":
-        """Return a new Feladat with updated asset fields (frozen → copy)."""
+        """Return a new Feladat with updated asset path fields (frozen → copy)."""
         return Feladat(
             id=self.id,
             neh=self.neh,
@@ -96,8 +95,8 @@ class Feladat:
             ev=self.ev,
             valtozat=self.valtozat,
             feladat_sorszam=self.feladat_sorszam,
-            tts_kerdes=tts_kerdes if tts_kerdes is not None else self.tts_kerdes,
-            tts_magyarazat=tts_magyarazat if tts_magyarazat is not None else self.tts_magyarazat,
+            tts_kerdes_path=tts_kerdes_path if tts_kerdes_path is not None else self.tts_kerdes_path,
+            tts_magyarazat_path=tts_magyarazat_path if tts_magyarazat_path is not None else self.tts_magyarazat_path,
         )
 
     def neh_csillag(self) -> str:
@@ -176,6 +175,8 @@ class KategoriaKulcs(Enum):
 class KategoriaNevezektan:
     iskola_tipusa: str  # pl. "6 osztályos gimnázium"
     cel_evfolyam: str   # ahova a tanuló belép, pl. "7. osztály"
+    szint_ertek: str    # Feladat.szint szűrőérték, pl. "6 osztályos"
+    cli_kulcs: str      # --only parancssori érték, pl. "6", "8", "4"
     rovid: str          # rövid megnevezés a UI-hoz
     teljes: str         # teljes hivatalos megnevezés
     # A mappa neve mindig a kulcs enum .value-ja – nem duplikáljuk.
@@ -185,6 +186,8 @@ KATEGORIA_INFO: dict[KategoriaKulcs, KategoriaNevezektan] = {
     KategoriaKulcs.OSZTALY_6: KategoriaNevezektan(
         iskola_tipusa="6 osztályos gimnázium",
         cel_evfolyam="7. osztály",
+        szint_ertek="6 osztályos",
+        cli_kulcs="6",
         rovid="6 osztályos gimnázium (7. osztályba lépőknek)",
         teljes=(
             "Felvételi feladatsorok 6 osztályos gimnáziumba – "
@@ -194,6 +197,8 @@ KATEGORIA_INFO: dict[KategoriaKulcs, KategoriaNevezektan] = {
     KategoriaKulcs.OSZTALY_8: KategoriaNevezektan(
         iskola_tipusa="8 osztályos gimnázium",
         cel_evfolyam="5. osztály",
+        szint_ertek="8 osztályos",
+        cli_kulcs="8",
         rovid="8 osztályos gimnázium (5. osztályba lépőknek)",
         teljes=(
             "Felvételi feladatsorok 8 osztályos gimnáziumba – "
@@ -203,6 +208,8 @@ KATEGORIA_INFO: dict[KategoriaKulcs, KategoriaNevezektan] = {
     KategoriaKulcs.EVFOLYAM_9: KategoriaNevezektan(
         iskola_tipusa="4 osztályos gimnázium",
         cel_evfolyam="9. évfolyam",
+        szint_ertek="4 osztályos",
+        cli_kulcs="4",
         rovid="4 osztályos gimnázium (9. évfolyamra lépőknek)",
         teljes=(
             "Felvételi feladatsorok a 9. évfolyamra – "
