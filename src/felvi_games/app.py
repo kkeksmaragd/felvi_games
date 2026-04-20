@@ -9,6 +9,7 @@ from pathlib import Path
 import streamlit as st
 
 from felvi_games.ai import check_answer, speech_to_text, text_to_speech
+from felvi_games.db import FeladatRepository
 from felvi_games.models import Ertekeles, Fazis, Feladat, GameState
 
 # ---------------------------------------------------------------------------
@@ -20,14 +21,45 @@ _TARGYAK = ["matek", "magyar"]
 _SZINTEK = ["mind", "6 osztályos", "8 osztályos"]
 
 # ---------------------------------------------------------------------------
+# Repository (singleton per process)
+# ---------------------------------------------------------------------------
+
+
+@st.cache_resource
+def get_repo() -> FeladatRepository:
+    repo = FeladatRepository()
+    _seed_from_json(repo)
+    return repo
+
+
+def _seed_from_json(repo: FeladatRepository) -> None:
+    """Populate DB from feladatok.json if the table is empty."""
+    if repo.count() > 0:
+        return
+    json_path = _DATA_DIR / "feladatok.json"
+    if not json_path.exists():
+        return
+    raw = json.loads(json_path.read_text(encoding="utf-8"))
+    feladatok = [
+        Feladat.from_dict(f, targy=targy)
+        for targy, lista in raw.items()
+        for f in lista
+    ]
+    repo.upsert_many(feladatok)
+
+
+# ---------------------------------------------------------------------------
 # Data loading
 # ---------------------------------------------------------------------------
 
 
 @st.cache_data
 def load_feladatok() -> dict[str, list[Feladat]]:
-    raw = json.loads((_DATA_DIR / "feladatok.json").read_text(encoding="utf-8"))
-    return {targy: [Feladat.from_dict(f) for f in lista] for targy, lista in raw.items()}
+    repo = get_repo()
+    result: dict[str, list[Feladat]] = {}
+    for targy in _TARGYAK:
+        result[targy] = repo.all(targy=targy)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -143,12 +175,19 @@ def _render_kerdes(gs: GameState) -> None:
     with col_tts:
         if st.button("🔊 Feladat felolvasása"):
             with st.spinner("Hangszintézis..."):
-                gs.tts_audio = text_to_speech(feladat.tts_szoveg())
+                audio = text_to_speech(feladat.tts_szoveg())
+                gs.tts_audio = audio
+                # Persist so subsequent loads skip the API call
+                get_repo().save_tts_assets(feladat.id, tts_kerdes=audio)
     with col_hint:
         if st.button("💡 Tipp"):
             st.toast(feladat.hint, icon="💡")
 
     if gs.tts_audio:
+        st.audio(gs.tts_audio, format="audio/mp3", autoplay=True)
+    elif feladat.tts_kerdes:
+        # Use pre-rendered asset from DB
+        gs.tts_audio = feladat.tts_kerdes
         st.audio(gs.tts_audio, format="audio/mp3", autoplay=True)
 
     st.markdown("---")
@@ -180,6 +219,7 @@ def _render_kerdes(gs: GameState) -> None:
                     feladat.magyarazat,
                 )
             gs.record_answer(feladat, ert)
+            get_repo().save_megoldas(feladat, valasz, ert)
             gs.fazis = Fazis.EREDMENY
             st.rerun()
     with col_vissza:
