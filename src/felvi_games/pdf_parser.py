@@ -35,7 +35,7 @@ from felvi_games.db import FeladatRepository
 from felvi_games.models import Feladat, FeladatCsoport, _parse_str_list
 from felvi_games.review import print_csoport, print_feladat, review_feladatok
 
-load_dotenv()
+load_dotenv(Path(__file__).parent.parent.parent / ".env", override=True)
 
 logger = logging.getLogger(__name__)
 

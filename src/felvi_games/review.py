@@ -249,7 +249,8 @@ def review_feladat_ai(
     review_megjegyzes set.
     """
     from dotenv import load_dotenv
-    load_dotenv()
+    from pathlib import Path
+    load_dotenv(Path(__file__).parent.parent.parent / ".env", override=True)
 
     client = _make_openai_client()
     model = model or os.getenv("LLM_MODEL", "gpt-4o")

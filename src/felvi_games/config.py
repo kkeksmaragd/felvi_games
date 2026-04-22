@@ -24,9 +24,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
-
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
+load_dotenv(_PROJECT_ROOT / ".env", override=True)
 
 # ---------------------------------------------------------------------------
 # Paths

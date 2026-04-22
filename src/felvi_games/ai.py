@@ -6,12 +6,14 @@ import json
 import os
 import tempfile
 
+from pathlib import Path
+
 from dotenv import load_dotenv
 from openai import OpenAI
 
 from felvi_games.models import Ertekeles
 
-load_dotenv()
+load_dotenv(Path(__file__).parent.parent.parent / ".env", override=True)
 
 _client = OpenAI(
     api_key=os.getenv("LLM_API_KEY"),
