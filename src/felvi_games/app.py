@@ -355,10 +355,11 @@ def _render_valasz_input(feladat: Feladat, gs: GameState) -> str:
             with st.spinner("Átírás (Whisper)..."):
                 gs.atiras = speech_to_text(audio_input.getvalue())
 
-    szoveges = st.text_input(
+    szoveges = st.text_area(
         "✍️ Vagy írj ide:",
         value=gs.atiras,
         placeholder="pl. 32",
+        height=120,
     )
     return (szoveges or gs.atiras).strip()
 
