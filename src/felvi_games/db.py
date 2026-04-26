@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    or_,
     select,
 )
 from sqlalchemy.orm import (
@@ -31,7 +32,15 @@ from felvi_games.config import (
     relative_asset_path,
     resolve_asset,
 )
-from felvi_games.models import Ertekeles, Feladat, FeladatCsoport, Menet, _list_to_json
+from felvi_games.models import (
+    Erem,
+    Ertekeles,
+    Feladat,
+    FeladatCsoport,
+    FelhasznaloErem,
+    Menet,
+    _list_to_json,
+)
 
 # ---------------------------------------------------------------------------
 # Engine
@@ -58,13 +67,20 @@ class FelhasznaloRecord(Base):
 
     __tablename__ = "felhasznalok"
 
-    nev: Mapped[str] = mapped_column(String(64), primary_key=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    nev: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    extra_info: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON dict of optional profile fields
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )
 
     menetek: Mapped[list["MenetRecord"]] = relationship(
-        back_populates="felhasznalo", cascade="all, delete-orphan"
+        back_populates="felhasznalo", cascade="all, delete-orphan",
+        foreign_keys="MenetRecord.felhasznalo_id",
+    )
+    eremek_gyujtemeny: Mapped[list["FelhasznaloEremRecord"]] = relationship(
+        back_populates="felhasznalo", cascade="all, delete-orphan",
+        foreign_keys="FelhasznaloEremRecord.felhasznalo_id",
     )
 
 
@@ -74,11 +90,14 @@ class MenetRecord(Base):
     __tablename__ = "menetek"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    felhasznalo_nev: Mapped[str] = mapped_column(
-        ForeignKey("felhasznalok.nev", ondelete="CASCADE"),
-        nullable=False,
+    felhasznalo_id: Mapped[int | None] = mapped_column(
+        ForeignKey("felhasznalok.id", ondelete="CASCADE"),
+        nullable=True,
         index=True,
     )
+    # Denormalised name kept for backward-compatible queries in achievements / progress_check.
+    # Will be removed in a future migration once all query sites use felhasznalo_id.
+    felhasznalo_nev: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     targy: Mapped[str] = mapped_column(String(16), nullable=False)
     szint: Mapped[str] = mapped_column(String(32), nullable=False)
     feladat_limit: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -89,7 +108,9 @@ class MenetRecord(Base):
     )
     ended_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
-    felhasznalo: Mapped["FelhasznaloRecord"] = relationship(back_populates="menetek")
+    felhasznalo: Mapped["FelhasznaloRecord"] = relationship(
+        back_populates="menetek", foreign_keys=[felhasznalo_id]
+    )
     megoldasok: Mapped[list["MegoldasRecord"]] = relationship(back_populates="menet")
 
     def to_domain(self) -> Menet:
@@ -216,7 +237,12 @@ class MegoldasRecord(Base):
     menet_id: Mapped[int | None] = mapped_column(
         ForeignKey("menetek.id"), nullable=True, index=True
     )
-    felhasznalo_nev: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    felhasznalo_nev: Mapped[str] = mapped_column(String(64), nullable=False, default="")  # kept for legacy queries
+    felhasznalo_id: Mapped[int | None] = mapped_column(
+        ForeignKey("felhasznalok.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     adott_valasz: Mapped[str] = mapped_column(Text, nullable=False)
     helyes: Mapped[bool] = mapped_column(Boolean, nullable=False)
     pont: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -230,6 +256,104 @@ class MegoldasRecord(Base):
 
     feladat: Mapped["FeladatRecord"] = relationship(back_populates="megoldasok")
     menet: Mapped["MenetRecord | None"] = relationship(back_populates="megoldasok")
+
+
+class EremRecord(Base):
+    """Medal/achievement catalog entry – one row per possible medal."""
+
+    __tablename__ = "eremek"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    nev: Mapped[str] = mapped_column(String(128), nullable=False)
+    leiras: Mapped[str] = mapped_column(Text, nullable=False)
+    ikon: Mapped[str] = mapped_column(String(16), nullable=False)
+    kategoria: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    ideiglenes: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    ervenyes_napig: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    ismetelheto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    kep_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    hang_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gif_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    privat: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+    cel_felhasznalo: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    def to_domain(self) -> Erem:
+        return Erem(
+            id=self.id,
+            nev=self.nev,
+            leiras=self.leiras,
+            ikon=self.ikon,
+            kategoria=self.kategoria,
+            ideiglenes=self.ideiglenes,
+            ervenyes_napig=self.ervenyes_napig,
+            ismetelheto=self.ismetelheto,
+            kep_url=self.kep_url,
+            hang_url=self.hang_url,
+            gif_url=self.gif_url,
+            privat=self.privat,
+            cel_felhasznalo=self.cel_felhasznalo,
+        )
+
+
+class InterakcioRecord(Base):
+    """Fine-grained player behaviour event log."""
+
+    __tablename__ = "interakciok"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    felhasznalo_nev: Mapped[str] = mapped_column(String(64), nullable=False, index=True)  # kept for legacy queries
+    felhasznalo_id: Mapped[int | None] = mapped_column(
+        ForeignKey("felhasznalok.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    tipus: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    targy: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    szint: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    feladat_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    menet_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    meta: Mapped[str | None] = mapped_column(Text, nullable=True)   # JSON freeform
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc), index=True
+    )
+
+
+class FelhasznaloEremRecord(Base):
+    """Earned medal/achievement row per user."""
+
+    __tablename__ = "felhasznalo_eremek"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    felhasznalo_nev: Mapped[str] = mapped_column(String(64), nullable=False, index=True)  # kept for legacy queries
+    felhasznalo_id: Mapped[int | None] = mapped_column(
+        ForeignKey("felhasznalok.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    erem_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    szerzett_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    lejarat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    szamlalo: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    felhasznalo: Mapped["FelhasznaloRecord | None"] = relationship(
+        back_populates="eremek_gyujtemeny", foreign_keys=[felhasznalo_id]
+    )
+
+    def to_domain(self) -> FelhasznaloErem:
+        return FelhasznaloErem(
+            id=self.id,
+            felhasznalo=self.felhasznalo_nev,
+            erem_id=self.erem_id,
+            szerzett=self.szerzett_at,
+            lejarat=self.lejarat_at,
+            szamlalo=self.szamlalo,
+        )
 
 
 def init_db(db_path: Path | None = None) -> None:
@@ -248,6 +372,7 @@ class FeladatRepository:
     def __init__(self, db_path: Path | None = None) -> None:
         self._engine = get_engine(db_path)
         init_db(db_path)
+        self.seed_erem_katalogus()
 
     # --- Feladat CRUD ---
 
@@ -550,11 +675,13 @@ class FeladatRepository:
         segitseg_kert: bool = False,
         hibajelezes: bool = False,
     ) -> None:
+        user_id = self._get_felhasznalo_id(felhasznalo_nev) if felhasznalo_nev else None
         with Session(self._engine) as session:
             session.add(MegoldasRecord(
                 feladat_id=feladat.id,
                 menet_id=menet_id,
                 felhasznalo_nev=felhasznalo_nev,
+                felhasznalo_id=user_id,
                 adott_valasz=adott_valasz,
                 helyes=ertekeles.helyes,
                 pont=ertekeles.pont,
@@ -596,12 +723,25 @@ class FeladatRepository:
 
     # --- Felhasznalo & Menet ---
 
-    def get_or_create_felhasznalo(self, nev: str) -> None:
-        """Ensure a player record exists for the given name."""
+    def _get_felhasznalo_id(self, nev: str) -> int | None:
+        """Resolve a user name to its integer id.  Returns None if not found."""
         with Session(self._engine) as session:
-            if session.get(FelhasznaloRecord, nev) is None:
-                session.add(FelhasznaloRecord(nev=nev))
+            return session.scalar(
+                select(FelhasznaloRecord.id).where(FelhasznaloRecord.nev == nev)
+            )
+
+    def get_or_create_felhasznalo(self, nev: str) -> int:
+        """Ensure a player record exists and return the user id."""
+        with Session(self._engine) as session:
+            rec = session.scalar(
+                select(FelhasznaloRecord).where(FelhasznaloRecord.nev == nev)
+            )
+            if rec is None:
+                rec = FelhasznaloRecord(nev=nev)
+                session.add(rec)
                 session.commit()
+                session.refresh(rec)
+            return rec.id
 
     def start_menet(
         self,
@@ -611,8 +751,10 @@ class FeladatRepository:
         feladat_limit: int,
     ) -> int:
         """Create a new playing session and return its id."""
+        user_id = self._get_felhasznalo_id(felhasznalo_nev)
         with Session(self._engine) as session:
             record = MenetRecord(
+                felhasznalo_id=user_id,
                 felhasznalo_nev=felhasznalo_nev,
                 targy=targy,
                 szint=szint,
@@ -649,3 +791,215 @@ class FeladatRepository:
                 .limit(limit)
             )
             return [r.to_domain() for r in session.scalars(stmt)]
+
+    # --- Interaction log ---
+
+    def log_interakcio(
+        self,
+        felhasznalo_nev: str,
+        tipus: str,
+        *,
+        targy: str | None = None,
+        szint: str | None = None,
+        feladat_id: str | None = None,
+        menet_id: int | None = None,
+        meta: dict | None = None,
+    ) -> None:
+        """Append one raw behaviour event to the interaction log."""
+        import json as _json
+        user_id = self._get_felhasznalo_id(felhasznalo_nev)
+        with Session(self._engine) as session:
+            session.add(InterakcioRecord(
+                felhasznalo_nev=felhasznalo_nev,
+                felhasznalo_id=user_id,
+                tipus=tipus,
+                targy=targy,
+                szint=szint,
+                feladat_id=feladat_id,
+                menet_id=menet_id,
+                meta=_json.dumps(meta, ensure_ascii=False) if meta else None,
+            ))
+            session.commit()
+
+    def get_interakciok(
+        self,
+        felhasznalo_nev: str,
+        tipus: str | None = None,
+        limit: int = 200,
+    ) -> list[InterakcioRecord]:
+        """Fetch recent interaction events for a user (newest first)."""
+        with Session(self._engine) as session:
+            stmt = (
+                select(InterakcioRecord)
+                .where(InterakcioRecord.felhasznalo_nev == felhasznalo_nev)
+                .order_by(InterakcioRecord.created_at.desc())
+                .limit(limit)
+            )
+            if tipus:
+                stmt = stmt.where(InterakcioRecord.tipus == tipus)
+            return list(session.scalars(stmt))
+
+    # --- Medals (earned records) ---
+
+    def grant_erem(
+        self,
+        felhasznalo_nev: str,
+        erem_id: str,
+        *,
+        lejarat_at: datetime | None = None,
+    ) -> FelhasznaloErem:
+        """Grant a medal.  For repeatable medals, increments the counter."""
+        with Session(self._engine) as session:
+            existing = session.execute(
+                select(FelhasznaloEremRecord)
+                .where(
+                    FelhasznaloEremRecord.felhasznalo_nev == felhasznalo_nev,
+                    FelhasznaloEremRecord.erem_id == erem_id,
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+
+            if existing:
+                existing.szamlalo += 1
+                existing.szerzett_at = datetime.now(timezone.utc)
+                if lejarat_at is not None:
+                    existing.lejarat_at = lejarat_at
+                session.commit()
+                return existing.to_domain()
+            else:
+                user_id = self._get_felhasznalo_id(felhasznalo_nev)
+                rec = FelhasznaloEremRecord(
+                    felhasznalo_nev=felhasznalo_nev,
+                    felhasznalo_id=user_id,
+                    erem_id=erem_id,
+                    lejarat_at=lejarat_at,
+                )
+                session.add(rec)
+                session.commit()
+                return rec.to_domain()
+
+    def get_eremek(
+        self,
+        felhasznalo_nev: str,
+        include_expired: bool = False,
+    ) -> list[FelhasznaloErem]:
+        """Return all (active) medals for a user."""
+        with Session(self._engine) as session:
+            stmt = (
+                select(FelhasznaloEremRecord)
+                .where(FelhasznaloEremRecord.felhasznalo_nev == felhasznalo_nev)
+                .order_by(FelhasznaloEremRecord.szerzett_at.desc())
+            )
+            records = [r.to_domain() for r in session.scalars(stmt)]
+        if include_expired:
+            return records
+        return [r for r in records if r.aktiv]
+
+    def has_erem(self, felhasznalo_nev: str, erem_id: str) -> bool:
+        """True if the user has an active (non-expired) instance of this medal."""
+        return any(r.erem_id == erem_id for r in self.get_eremek(felhasznalo_nev))
+
+    # --- Medal catalog (EremRecord) ---
+
+    def seed_erem_katalogus(self) -> int:
+        """Insert any catalog medals from EREM_KATALOGUS not yet in the DB.
+
+        Non-destructive: never overwrites rows that already exist, so admin
+        edits made via ``upsert_erem`` are preserved.  Returns the number of
+        newly inserted rows.
+        """
+        from felvi_games.achievements import EREM_KATALOGUS
+
+        with Session(self._engine) as session:
+            existing = {row[0] for row in session.execute(select(EremRecord.id))}
+            new_count = 0
+            for erem_id, erem in EREM_KATALOGUS.items():
+                if erem_id not in existing:
+                    session.add(EremRecord(
+                        id=erem.id,
+                        nev=erem.nev,
+                        leiras=erem.leiras,
+                        ikon=erem.ikon,
+                        kategoria=erem.kategoria,
+                        ideiglenes=erem.ideiglenes,
+                        ervenyes_napig=erem.ervenyes_napig,
+                        ismetelheto=erem.ismetelheto,
+                        kep_url=erem.kep_url,
+                        hang_url=erem.hang_url,
+                        gif_url=erem.gif_url,
+                        privat=False,
+                        cel_felhasznalo=None,
+                    ))
+                    new_count += 1
+            session.commit()
+        return new_count
+
+    def get_erem_katalogus(
+        self,
+        felhasznalo_nev: str | None = None,
+    ) -> dict[str, Erem]:
+        """Return the medal catalog from DB.
+
+        If *felhasznalo_nev* is given, includes global medals plus private
+        medals targeted at that specific user.  Without it, returns only
+        global medals.
+        """
+        with Session(self._engine) as session:
+            stmt = select(EremRecord)
+            if felhasznalo_nev is not None:
+                stmt = stmt.where(
+                    or_(
+                        EremRecord.privat == False,  # noqa: E712
+                        EremRecord.cel_felhasznalo == felhasznalo_nev,
+                    )
+                )
+            else:
+                stmt = stmt.where(EremRecord.privat == False)  # noqa: E712
+            return {r.id: r.to_domain() for r in session.scalars(stmt)}
+
+    def upsert_erem(self, erem: Erem) -> None:
+        """Insert or fully update a medal catalog entry."""
+        with Session(self._engine) as session:
+            existing = session.get(EremRecord, erem.id)
+            now = datetime.now(timezone.utc)
+            if existing:
+                existing.nev = erem.nev
+                existing.leiras = erem.leiras
+                existing.ikon = erem.ikon
+                existing.kategoria = erem.kategoria
+                existing.ideiglenes = erem.ideiglenes
+                existing.ervenyes_napig = erem.ervenyes_napig
+                existing.ismetelheto = erem.ismetelheto
+                existing.kep_url = erem.kep_url
+                existing.hang_url = erem.hang_url
+                existing.gif_url = erem.gif_url
+                existing.privat = erem.privat
+                existing.cel_felhasznalo = erem.cel_felhasznalo
+                existing.updated_at = now
+            else:
+                session.add(EremRecord(
+                    id=erem.id,
+                    nev=erem.nev,
+                    leiras=erem.leiras,
+                    ikon=erem.ikon,
+                    kategoria=erem.kategoria,
+                    ideiglenes=erem.ideiglenes,
+                    ervenyes_napig=erem.ervenyes_napig,
+                    ismetelheto=erem.ismetelheto,
+                    kep_url=erem.kep_url,
+                    hang_url=erem.hang_url,
+                    gif_url=erem.gif_url,
+                    privat=erem.privat,
+                    cel_felhasznalo=erem.cel_felhasznalo,
+                ))
+            session.commit()
+
+    def delete_erem(self, erem_id: str) -> bool:
+        """Remove a medal definition from the catalog.  Returns True if found."""
+        with Session(self._engine) as session:
+            rec = session.get(EremRecord, erem_id)
+            if rec is None:
+                return False
+            session.delete(rec)
+            session.commit()
+            return True

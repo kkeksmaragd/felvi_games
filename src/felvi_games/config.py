@@ -123,3 +123,34 @@ def relative_text_path(pdf_stem: str) -> str:
     Példa: "text/M8_2025_1_fl.txt"
     """
     return f"text/{pdf_stem}.txt"
+
+
+# ---------------------------------------------------------------------------
+# Medal asset helpers
+# ---------------------------------------------------------------------------
+
+def medal_asset_dir(erem_id: str) -> Path:
+    """Root folder for all assets belonging to one medal.
+
+    Layout::
+
+        <assets_dir>/eremek/<erem_id>/
+            kep.png        ← AI-generated or user-supplied image
+            hang.mp3       ← TTS / user-supplied award sound
+            gif.gif        ← user-supplied or URL-referenced animation
+
+    The directory is created lazily by the writer; readers should use
+    ``medal_asset_path(erem_id, kind).exists()`` before reading.
+    """
+    return get_assets_dir() / "eremek" / erem_id
+
+
+def medal_asset_path(erem_id: str, kind: str) -> Path:
+    """Absolute path to one specific medal asset file.
+
+    Args:
+        erem_id: Medal slug, e.g. ``"elso_menet"``.
+        kind:    One of ``"kep"`` (PNG), ``"hang"`` (MP3), ``"gif"`` (GIF).
+    """
+    ext = {"kep": "png", "hang": "mp3", "gif": "gif"}.get(kind, kind)
+    return medal_asset_dir(erem_id) / f"{kind}.{ext}"

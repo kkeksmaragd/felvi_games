@@ -20,6 +20,20 @@ class Fazis(str, Enum):
     EREDMENY = "eredmeny"
 
 
+class InterakcioTipus(str, Enum):
+    """Fine-grained player behaviour events written to the interaction log."""
+    MENET_INDUL = "menet_indul"
+    MENET_VEGZETT = "menet_vegzett"
+    HELYES_VALASZ = "helyes_valasz"
+    HELYTELEN_VALASZ = "helytelen_valasz"
+    SEGITSEG_KERT = "segitseg_kert"
+    HIBAJELEZES = "hibajelezes"
+    TARGY_VALTAS = "targy_valtas"
+    SZINT_VALTAS = "szint_valtas"
+    TTS_LEJATSZO = "tts_lejatszo"
+    FELADAT_KIHAGYAS = "feladat_kihagyas"
+
+
 class FeladatTipus(str, Enum):
     """Feladat típusok az értékelési logika számára."""
     NYILT_VALASZ = "nyilt_valasz"       # szabad szöveges válasz
@@ -368,6 +382,50 @@ class GameState:
         self.menet_cel = cel
         self.targy = targy
         self.szint = szint
+
+
+# ---------------------------------------------------------------------------
+# Gamification – medals / achievements
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Erem:
+    """Static medal/achievement definition (catalog entry, not persisted)."""
+    id: str                         # unique slug, e.g. "elso_menet"
+    nev: str                        # Hungarian display name
+    leiras: str                     # description shown to the user
+    ikon: str                       # emoji (or URL to image/SVG)
+    kategoria: str                  # "teljesitmeny" | "kitartas" | "rendszeresseg" | "felfedezes" | "merfoldko"
+    ideiglenes: bool = False        # True → award expires
+    ervenyes_napig: int | None = None  # days valid when ideiglenes=True
+    ismetelheto: bool = False       # True → can be earned multiple times
+    # --- rich media assets (relative path under assets/eremek/<id>/ OR external URL) ---
+    kep_url: str | None = None      # static PNG/JPEG image
+    hang_url: str | None = None     # MP3 award fanfare / sound effect
+    gif_url: str | None = None      # animated GIF (user-supplied or external URL)
+    # --- visibility ---
+    privat: bool = False                    # True → only visible / earnable by cel_felhasznalo
+    cel_felhasznalo: str | None = None      # specific user this private medal targets
+
+
+@dataclass(frozen=True)
+class FelhasznaloErem:
+    """One earned-medal record for a user (domain model for FelhasznaloEremRecord)."""
+    id: int
+    felhasznalo: str
+    erem_id: str
+    szerzett: datetime
+    lejarat: datetime | None
+    szamlalo: int = 1               # how many times earned (for repeatable medals)
+
+    @property
+    def aktiv(self) -> bool:
+        """False only for temporary medals that have expired."""
+        if self.lejarat is None:
+            return True
+        now = datetime.now(timezone.utc)
+        exp = self.lejarat.replace(tzinfo=timezone.utc) if self.lejarat.tzinfo is None else self.lejarat
+        return now < exp
 
 
 # ---------------------------------------------------------------------------

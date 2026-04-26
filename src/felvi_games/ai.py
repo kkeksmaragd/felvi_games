@@ -117,3 +117,147 @@ def check_answer(
         return ert
     except Exception:
         return Ertekeles.hiba()
+
+
+# ---------------------------------------------------------------------------
+# Medal asset generation
+# ---------------------------------------------------------------------------
+
+_MEDAL_IMAGE_PROMPT = (
+    "A vibrant, highly detailed digital award medal for a children's educational game. "
+    "The medal should look like a collectible achievement badge: circular, gold/silver metallic rim, "
+    "colorful center, with the following theme: {tema}. "
+    "Style: colorful flat vector illustration, bold outlines, celebratory feel. "
+    "No text on the medal. Transparent or white background. Square canvas."
+)
+
+_MEDAL_HANG_TEMPLATE = (
+    "Gratulálunk! Megszerezted a(z) {nev} érmet! {leiras}"
+)
+
+
+def generate_medal_image(nev: str, leiras: str, ikon: str) -> bytes:
+    """Generate a PNG medal image with DALL-E 3.
+
+    Returns raw PNG bytes (1024×1024).
+    """
+    tema = f"{nev} – {leiras} (symbol hint: {ikon})"
+    prompt = _MEDAL_IMAGE_PROMPT.format(tema=tema)
+    response = _client.images.generate(
+        model="dall-e-3",
+        prompt=prompt,
+        n=1,
+        size="1024x1024",
+        response_format="b64_json",
+        quality="standard",
+    )
+    import base64
+    b64 = response.data[0].b64_json
+    return base64.b64decode(b64)
+
+
+def generate_medal_hang(nev: str, leiras: str) -> bytes:
+    """Generate an MP3 award announcement with TTS (Nova voice).
+
+    Returns raw MP3 bytes.
+    """
+    szoveg = _MEDAL_HANG_TEMPLATE.format(nev=nev, leiras=leiras)
+    return text_to_speech(szoveg)
+
+
+# ---------------------------------------------------------------------------
+# Daily insight (progress analysis + optional new medal suggestion)
+# ---------------------------------------------------------------------------
+
+_DAILY_INSIGHT_SYSTEM = (
+    "Magyar felvételi kvíz coach vagy. "
+    "A játékos napi belépésekor rövid, személyes motiváló üzenetet írsz, "
+    "és esetleg javaslatot teszel egy egyedi napi kihívás éremre. "
+    "Mindig magyarul válaszolj. Légy lelkesítő, tömör (max 3 mondat az üzenetben)."
+)
+
+_DAILY_INSIGHT_TEMPLATE = """\
+Felhasználó: {user}
+Statisztikák:
+  - Összes megoldott feladat: {total_attempts}
+  - Helyes válasz arány: {accuracy_pct}%
+  - Lezárt menetek: {completed_sessions}
+  - Jelenlegi napi sorozat: {current_streak_days} nap
+  - Elmúlt 7 napból aktív napok: {recent_days_7d}
+  - Legjobb egymást követő helyes sorozat: {best_correct_streak}
+  - Tárgyak amelyeket játszott: {subjects_used}
+  - Szintek amelyeket játszott: {levels_used}
+  - Megszerzett érmek száma: {earned_count}
+
+Közel lévő érmek (progress 0–1):
+{close_medals_text}
+
+Feladatod:
+1. Írj egy rövid, személyre szabott motiváló üzenetet (greeting).
+2. Opcionálisan javasolj egy privát napi kihívás érmet amelyet a felhasználó
+   a KÖVETKEZŐ belépésig megszerezhet, HA van erre reális lehetőség a statisztikák alapján.
+   Ha nincs jó ötlet, hagyj new_medal null-on.
+
+Válaszolj CSAK JSON-ban:
+{{
+  "greeting": "...",
+  "new_medal": {{
+    "nev": "...",
+    "leiras": "Pontosan mit kell elérni (pl. 10 feladatot hibátlanul)",
+    "ikon": "emoji",
+    "kategoria": "teljesitmeny|merfoldko|rendszeresseg|felfedezes|kitartas",
+    "ideiglenes": true,
+    "ervenyes_napig": 3
+  }} | null
+}}"""
+
+
+def generate_daily_insight(
+    user: str,
+    stats: dict,
+    close_medals: list,
+    earned_count: int,
+) -> dict:
+    """Ask the LLM for a motivational greeting and an optional new medal suggestion.
+
+    Args:
+        user:         Player name.
+        stats:        Dict from ``progress_check.get_user_stats()``.
+        close_medals: List of ``CloseMedal`` objects.
+        earned_count: How many medals the user has earned so far.
+
+    Returns:
+        Dict with ``greeting`` (str) and ``new_medal`` (dict | None).
+    """
+    close_text = "\n".join(
+        f"  - {cm.erem.ikon} {cm.erem.nev}: {cm.hint} ({int(cm.progress * 100)}%)"
+        for cm in close_medals
+    ) or "  (nincs közel lévő érem)"
+
+    prompt = _DAILY_INSIGHT_TEMPLATE.format(
+        user=user,
+        close_medals_text=close_text,
+        earned_count=earned_count,
+        **{k: stats[k] for k in (
+            "total_attempts", "accuracy_pct", "completed_sessions",
+            "current_streak_days", "recent_days_7d",
+            "best_correct_streak", "subjects_used", "levels_used",
+        )},
+    )
+
+    response = _client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": _DAILY_INSIGHT_SYSTEM},
+            {"role": "user", "content": prompt},
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.8,
+        max_tokens=400,
+    )
+    raw = response.choices[0].message.content or "{}"
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {"greeting": f"Helló {user}! Üdv vissza! 🎉", "new_medal": None}
+

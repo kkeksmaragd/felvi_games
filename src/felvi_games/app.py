@@ -12,7 +12,7 @@ import streamlit as st
 from felvi_games.ai import check_answer, speech_to_text, text_to_speech
 from felvi_games.config import get_exams_dir, resolve_asset, text_cache_path
 from felvi_games.db import FeladatRepository
-from felvi_games.models import KATEGORIA_INFO, Ertekeles, Fazis, Feladat, GameState
+from felvi_games.models import KATEGORIA_INFO, Ertekeles, Fazis, Feladat, GameState, InterakcioTipus
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -234,7 +234,45 @@ def _render_sidebar(gs: GameState) -> None:
                             f"{m.megoldott}/{m.feladat_limit} feladat, "
                             f"{m.pont} pont, {m.idotartam_perc}"
                         )
-
+            # Earned medals
+            eremek = get_repo().get_eremek(gs.felhasznalo)
+            if eremek:
+                st.divider()
+                from felvi_games.achievements import EREM_KATALOGUS
+                from felvi_games.medal_assets import get_medal_asset
+                with st.expander(f"🏅 Érmek ({len(eremek)})", expanded=False):
+                    for fe in eremek:
+                        erem = EREM_KATALOGUS.get(fe.erem_id)
+                        if erem is None:
+                            continue
+                        label = erem.ikon
+                        if fe.szamlalo > 1:
+                            label += f" ×{fe.szamlalo}"
+                        if erem.ideiglenes and fe.lejarat:
+                            exp = fe.lejarat.replace(tzinfo=timezone.utc) if fe.lejarat.tzinfo is None else fe.lejarat
+                            days_left = max(0, (exp - datetime.now(timezone.utc)).days)
+                            label += f"  *(még {days_left} nap)*"
+                        st.markdown(f"**{label} {erem.nev}**")
+                        # Rich assets — GIF beats static image
+                        gif = get_medal_asset(erem, "gif")
+                        kep = get_medal_asset(erem, "kep")
+                        if gif is not None:
+                            if isinstance(gif, bytes):
+                                st.image(gif, width=120)
+                            else:
+                                st.image(gif, width=120)   # URL
+                        elif kep is not None:
+                            if isinstance(kep, bytes):
+                                st.image(kep, width=120)
+                            else:
+                                st.image(kep, width=120)   # URL
+                        st.caption(f"_{erem.leiras}_")
+                        hang = get_medal_asset(erem, "hang")
+                        if hang is not None:
+                            data = hang if isinstance(hang, bytes) else None
+                            if data:
+                                st.audio(data, format="audio/mp3")
+                        st.markdown("---")
         st.divider()
         st.caption("Felvételi Kvíz v0.1\nOpenAI TTS + Whisper + GPT")
 
@@ -277,6 +315,11 @@ def _render_valasztas(
                     gs.felhasznalo, gs.targy, gs.szint, gs.menet_cel
                 )
                 gs.menet_megoldott = 0
+                if gs.felhasznalo:
+                    get_repo().log_interakcio(
+                        gs.felhasznalo, InterakcioTipus.MENET_INDUL,
+                        targy=gs.targy, szint=gs.szint, menet_id=gs.menet_id,
+                    )
             start_kerdes(feladat, gs)
             st.rerun()
         else:
@@ -420,10 +463,22 @@ def _render_kerdes(gs: GameState) -> None:
                     gs.tts_audio = audio
                     updated = get_repo().save_tts_assets(feladat, tts_kerdes=audio)
                     gs.aktualis = updated
+            if gs.felhasznalo:
+                get_repo().log_interakcio(
+                    gs.felhasznalo, InterakcioTipus.TTS_LEJATSZO,
+                    targy=gs.targy, szint=gs.szint,
+                    feladat_id=feladat.id, menet_id=gs.menet_id,
+                )
             st.rerun()
     with col_hint:
         if st.button("💡 Tipp"):
             gs.segitseg_kert = True
+            if gs.felhasznalo:
+                get_repo().log_interakcio(
+                    gs.felhasznalo, InterakcioTipus.SEGITSEG_KERT,
+                    targy=gs.targy, szint=gs.szint,
+                    feladat_id=feladat.id, menet_id=gs.menet_id,
+                )
             st.rerun()
     with col_hiba:
         if st.button("🚩 Hibát jelzek", help="Hibás feladatszöveg bejelentése"):
@@ -474,10 +529,32 @@ def _render_kerdes(gs: GameState) -> None:
                 segitseg_kert=gs.segitseg_kert,
                 hibajelezes=gs.hibajelezes,
             )
+            # --- interaction log ---
+            if gs.felhasznalo:
+                ev_tipus = (
+                    InterakcioTipus.HELYES_VALASZ if ert.helyes
+                    else InterakcioTipus.HELYTELEN_VALASZ
+                )
+                get_repo().log_interakcio(
+                    gs.felhasznalo, ev_tipus,
+                    targy=gs.targy, szint=gs.szint,
+                    feladat_id=feladat.id, menet_id=gs.menet_id,
+                    meta={"pont": ert.pont, "elapsed_sec": elapsed},
+                )
+            # --- session progress + medal checks ---
             if gs.menet_id:
                 get_repo().update_menet_progress(gs.menet_id, gs.menet_megoldott, gs.pont)
                 if gs.menet_megoldott >= gs.menet_cel:
                     get_repo().end_menet(gs.menet_id)
+                    if gs.felhasznalo:
+                        get_repo().log_interakcio(
+                            gs.felhasznalo, InterakcioTipus.MENET_VEGZETT,
+                            targy=gs.targy, szint=gs.szint, menet_id=gs.menet_id,
+                        )
+                        from felvi_games.achievements import check_new_medals
+                        uj_eremek = check_new_medals(gs.felhasznalo, gs.menet_id, get_repo())
+                        if uj_eremek:
+                            st.session_state["_uj_eremek"] = [e.id for e in uj_eremek]
                     gs.menet_id = None
             gs.fazis = Fazis.EREDMENY
             st.rerun()
@@ -666,6 +743,96 @@ def _render_login(gs: GameState) -> None:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+# Medal award dialog
+# ---------------------------------------------------------------------------
+
+
+@st.dialog("� Napi áttekintő")
+def _show_daily_insight_dialog(insight_data: dict) -> None:
+    """Display the AI-generated daily progress insight."""
+    from felvi_games.medal_assets import get_medal_asset
+
+    st.markdown(f"### {insight_data['greeting']}")
+
+    close = insight_data.get("close_medals", [])
+    if close:
+        st.markdown("#### 🎯 Hamarosan megszerezheted:")
+        for cm in close:
+            pct = int(cm["progress"] * 100)
+            bar = "█" * (pct // 10) + "░" * (10 - pct // 10)
+            st.markdown(f"{cm['ikon']} **{cm['nev']}** `{bar}` {pct}%")
+            st.caption(cm["hint"])
+
+    teaser = insight_data.get("teaser_medal")
+    if teaser:
+        st.markdown("---")
+        new_flag = " 🆕" if insight_data.get("new_medal_created") else ""
+        st.markdown(f"#### ⭐ Következő cél{new_flag}")
+        st.markdown(f"{teaser['ikon']} **{teaser['nev']}**")
+        st.caption(teaser["leiras"])
+        # Show image if available — but we need the Erem object; use id from dict
+        if teaser.get("id"):
+            from felvi_games.db import EremRecord
+            from felvi_games.models import Erem
+            from sqlalchemy.orm import Session as _S
+            with _S(get_repo()._engine) as _sess:
+                rec = _sess.get(EremRecord, teaser["id"])
+            if rec:
+                erem_obj = rec.to_domain()
+                kep = get_medal_asset(erem_obj, "kep")
+                if kep:
+                    st.image(kep if isinstance(kep, bytes) else kep, width=160)
+
+    if st.button("💪 Rajta, nézzük!", use_container_width=True, type="primary"):
+        st.session_state.pop("_napi_insight", None)
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Medal award dialog
+# ---------------------------------------------------------------------------
+
+
+@st.dialog("�🏅 Új érem!")
+def _show_medal_dialog(erem_ids: list[str]) -> None:
+    """Rich modal shown when one or more medals are awarded."""
+    from felvi_games.achievements import EREM_KATALOGUS
+    from felvi_games.medal_assets import get_medal_asset
+
+    for erem_id in erem_ids:
+        erem = EREM_KATALOGUS.get(erem_id)
+        if erem is None:
+            continue
+
+        st.markdown(f"## {erem.ikon}  {erem.nev}")
+        st.markdown(f"*{erem.leiras}*")
+
+        gif = get_medal_asset(erem, "gif")
+        kep = get_medal_asset(erem, "kep")
+
+        if gif is not None:
+            st.image(gif if isinstance(gif, bytes) else gif, use_container_width=True)
+        elif kep is not None:
+            st.image(kep if isinstance(kep, bytes) else kep, use_container_width=True)
+        else:
+            st.markdown(
+                f"<div style='font-size:120px;text-align:center'>{erem.ikon}</div>",
+                unsafe_allow_html=True,
+            )
+
+        hang = get_medal_asset(erem, "hang")
+        if hang is not None and isinstance(hang, bytes):
+            st.audio(hang, format="audio/mp3", autoplay=True)
+
+        if len(erem_ids) > 1:
+            st.markdown("---")
+
+    if st.button("🎉 Szuper, köszönöm!", use_container_width=True, type="primary"):
+        st.session_state.pop("_uj_eremek", None)
+        st.rerun()
+
+
+# ---------------------------------------------------------------------------
 
 
 def main() -> None:
@@ -680,6 +847,43 @@ def main() -> None:
 
     _render_header(gs)
     _render_sidebar(gs)
+
+    # Daily insight: trigger once per calendar day (runs in a spinner, non-blocking)
+    if "_napi_insight" not in st.session_state:
+        with st.spinner("Napi áttekintés betöltése..."):
+            try:
+                from felvi_games.progress_check import daily_check
+                insight = daily_check(gs.felhasznalo, get_repo())
+            except Exception:
+                insight = None
+        if insight is not None:
+            # serialise to a plain dict so Streamlit can keep it in session_state
+            st.session_state["_napi_insight"] = {
+                "greeting": insight.greeting,
+                "close_medals": [
+                    {"ikon": cm.erem.ikon, "nev": cm.erem.nev,
+                     "hint": cm.hint, "progress": cm.progress}
+                    for cm in insight.close_medals
+                ],
+                "teaser_medal": (
+                    {"id": insight.teaser_medal.id,
+                     "ikon": insight.teaser_medal.ikon,
+                     "nev": insight.teaser_medal.nev,
+                     "leiras": insight.teaser_medal.leiras}
+                    if insight.teaser_medal else None
+                ),
+                "new_medal_created": insight.new_medal_created,
+            }
+        else:
+            # Mark as checked so we don't call again this session
+            st.session_state["_napi_insight"] = None
+
+    if st.session_state.get("_napi_insight"):
+        _show_daily_insight_dialog(st.session_state["_napi_insight"])
+
+    # Award modal: triggered after a session ends with new medals
+    if st.session_state.get("_uj_eremek"):
+        _show_medal_dialog(st.session_state["_uj_eremek"])
 
     if gs.fazis == Fazis.VALASZTAS:
         _render_valasztas(feladatok, gs)
