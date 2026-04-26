@@ -9,6 +9,9 @@ Env változók:
   FELVI_ASSETS  – Asset (TTS MP3) mappa gyökere
                   alap: <project_root>/data/assets
                   Ha relatív, a FELVI_DB szülőkönyvtárához képest értendő.
+  FELVI_LOG_DIR – Log fájlok mappája
+                  alap: <FELVI_DB szülőkönyvtára>/logs
+  FELVI_LOG_LEVEL – Napló szint: DEBUG | INFO | WARNING (alap: INFO)
 
 Az asset fájlok struktúrája (egy szint mélység):
   <assets_dir>/<mappa_nev>/<feladat_id>_kerdes.mp3
@@ -19,6 +22,8 @@ ahol <mappa_nev> = <szint>_<ev>_v<valtozat>  (pl. "6_osztaly_2025_v1")
 
 from __future__ import annotations
 
+import logging
+import logging.handlers
 import os
 from pathlib import Path
 
@@ -57,8 +62,75 @@ def get_exams_dir() -> Path:
     return _PROJECT_ROOT / "exams"
 
 
+def get_log_dir() -> Path:
+    raw = os.environ.get("FELVI_LOG_DIR", "")
+    if raw:
+        return Path(raw)
+    return get_db_path().parent / "logs"
+
+
 # ---------------------------------------------------------------------------
-# Asset path helpers
+# Logging setup
+# ---------------------------------------------------------------------------
+
+def setup_logging() -> None:
+    """Configure root + felvi_games logger.
+
+    Call once at startup (app.py main, cli.py app callback).
+    Safe to call multiple times — idempotent via handler check.
+
+    Log files (rotating, 5 MB × 5 backups):
+      <log_dir>/felvi.log        – INFO+ for all felvi_games.*
+      <log_dir>/rewards.log      – DEBUG+ for felvi_games.achievements only
+    """
+    log_dir = get_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    level_name = os.environ.get("FELVI_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    fmt = logging.Formatter(
+        "%(asctime)s %(levelname)-8s %(name)s | %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+
+    # --- felvi_games root logger -----------------------------------------
+    pkg_logger = logging.getLogger("felvi_games")
+    if any(isinstance(h, logging.handlers.RotatingFileHandler) for h in pkg_logger.handlers):
+        return  # already set up
+
+    pkg_logger.setLevel(logging.DEBUG)  # handlers control the effective level
+
+    main_handler = logging.handlers.RotatingFileHandler(
+        log_dir / "felvi.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    main_handler.setLevel(level)
+    main_handler.setFormatter(fmt)
+    pkg_logger.addHandler(main_handler)
+
+    # --- rewards.log: DEBUG-level achievements logger --------------------
+    rewards_handler = logging.handlers.RotatingFileHandler(
+        log_dir / "rewards.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=5,
+        encoding="utf-8",
+    )
+    rewards_handler.setLevel(logging.DEBUG)
+    rewards_handler.setFormatter(fmt)
+
+    rewards_logger = logging.getLogger("felvi_games.achievements")
+    rewards_logger.addHandler(rewards_handler)
+
+    # Console: WARNING+ so Streamlit terminal stays quiet
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.WARNING)
+    console_handler.setFormatter(fmt)
+    pkg_logger.addHandler(console_handler)
+
+
 # ---------------------------------------------------------------------------
 
 def asset_subfolder(szint: str, ev: int | None, valtozat: int | None) -> str:

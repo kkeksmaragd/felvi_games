@@ -10,9 +10,11 @@ from pathlib import Path
 import streamlit as st
 
 from felvi_games.ai import check_answer, speech_to_text, text_to_speech
-from felvi_games.config import get_exams_dir, resolve_asset, text_cache_path
+from felvi_games.config import get_exams_dir, resolve_asset, setup_logging, text_cache_path
 from felvi_games.db import FeladatRepository
 from felvi_games.models import KATEGORIA_INFO, Ertekeles, Fazis, Feladat, GameState, InterakcioTipus
+
+setup_logging()
 
 # ---------------------------------------------------------------------------
 # Constants

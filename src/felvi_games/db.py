@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
@@ -1003,3 +1004,103 @@ class FeladatRepository:
             session.delete(rec)
             session.commit()
             return True
+
+    def get_user_stats(self, user_nev: str) -> "UserStats | None":
+        """Return aggregated statistics for *user_nev*, or None if unknown."""
+        from sqlalchemy import case, func, select
+
+        with Session(self._engine) as sess:
+            user_rec = sess.scalar(
+                select(FelhasznaloRecord).where(FelhasznaloRecord.nev == user_nev)
+            )
+            if user_rec is None:
+                return None
+
+            sess_row = sess.execute(
+                select(
+                    func.count(MenetRecord.id).label("ossz"),
+                    func.sum(case((MenetRecord.ended_at.is_not(None), 1), else_=0)).label("befejezett"),
+                    func.sum(MenetRecord.megoldott).label("megoldott"),
+                    func.sum(MenetRecord.feladat_limit).label("tervezett"),
+                    func.sum(MenetRecord.pont).label("pont"),
+                    func.min(MenetRecord.started_at).label("elso"),
+                    func.max(MenetRecord.started_at).label("utolso"),
+                ).where(MenetRecord.felhasznalo_nev == user_nev)
+            ).one()
+
+            ans_row = sess.execute(
+                select(
+                    func.count(MegoldasRecord.id).label("ossz"),
+                    func.sum(case((MegoldasRecord.helyes.is_(True), 1), else_=0)).label("helyes"),
+                    func.avg(MegoldasRecord.elapsed_sec).label("atlag_mp"),
+                    func.min(MegoldasRecord.elapsed_sec).label("min_mp"),
+                    func.sum(case((MegoldasRecord.segitseg_kert.is_(True), 1), else_=0)).label("hint"),
+                ).where(MegoldasRecord.felhasznalo_nev == user_nev)
+            ).one()
+
+            targy_szint = sess.execute(
+                select(MenetRecord.targy, MenetRecord.szint, func.count().label("n"))
+                .where(MenetRecord.felhasznalo_nev == user_nev)
+                .group_by(MenetRecord.targy, MenetRecord.szint)
+                .order_by(MenetRecord.targy, MenetRecord.szint)
+            ).all()
+
+            nap_rows = sess.execute(
+                select(func.date(MenetRecord.started_at).label("nap"), func.count().label("n"))
+                .where(MenetRecord.felhasznalo_nev == user_nev)
+                .group_by(func.date(MenetRecord.started_at))
+                .order_by(func.date(MenetRecord.started_at))
+            ).all()
+
+            eremek = self.get_eremek(user_nev, include_expired=True)
+
+        return UserStats(
+            id=user_rec.id,
+            nev=user_rec.nev,
+            created_at=user_rec.created_at,
+            menetek_ossz=int(sess_row.ossz or 0),
+            menetek_befejezett=int(sess_row.befejezett or 0),
+            megoldott_ossz=int(sess_row.megoldott or 0),
+            tervezett_ossz=int(sess_row.tervezett or 0),
+            pont_ossz=int(sess_row.pont or 0),
+            elso_menet=sess_row.elso,
+            utolso_menet=sess_row.utolso,
+            valaszok_ossz=int(ans_row.ossz or 0),
+            helyes_ossz=int(ans_row.helyes or 0),
+            atlag_mp=float(ans_row.atlag_mp) if ans_row.atlag_mp is not None else None,
+            min_mp=float(ans_row.min_mp) if ans_row.min_mp is not None else None,
+            hint_ossz=int(ans_row.hint or 0),
+            targy_szint=[(r.targy, r.szint, int(r.n)) for r in targy_szint],
+            jateknapok=[(r.nap, int(r.n)) for r in nap_rows],
+            eremek=eremek,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Stats dataclass (returned by FeladatRepository.get_user_stats)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class UserStats:
+    id: int
+    nev: str
+    created_at: datetime
+    menetek_ossz: int
+    menetek_befejezett: int
+    megoldott_ossz: int
+    tervezett_ossz: int
+    pont_ossz: int
+    elso_menet: datetime | None
+    utolso_menet: datetime | None
+    valaszok_ossz: int
+    helyes_ossz: int
+    atlag_mp: float | None
+    min_mp: float | None
+    hint_ossz: int
+    targy_szint: list[tuple[str, str, int]] = field(default_factory=list)
+    jateknapok: list[tuple[str, int]] = field(default_factory=list)
+    eremek: list[FelhasznaloErem] = field(default_factory=list)
+
+    @property
+    def accuracy_pct(self) -> float:
+        return (100.0 * self.helyes_ossz / self.valaszok_ossz) if self.valaszok_ossz else 0.0

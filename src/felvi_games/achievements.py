@@ -22,6 +22,7 @@ Adding a new medal:
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -36,6 +37,8 @@ if TYPE_CHECKING:
     from sqlalchemy import Engine
 
     from felvi_games.db import FeladatRepository
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -599,20 +602,43 @@ def check_new_medals(
 
     catalog = repo.get_erem_katalogus(user)
 
+    logger.info(
+        "check_new_medals start | user=%s session=%s catalog_size=%d",
+        user, session_id, len(catalog),
+    )
+
+    skipped_already_has = 0
+    skipped_no_rule = 0
+    rule_errors: list[str] = []
+
     for erem_id, erem in catalog.items():
         # Non-repeatable + already earned → skip
         if not erem.ismetelheto and repo.has_erem(user, erem_id):
+            skipped_already_has += 1
+            logger.debug("skip already_earned | user=%s medal=%s", user, erem_id)
             continue
 
         # No rule registered → manual-grant only, skip auto-check
         rule_fn = SZABALY_REGISTRY.get(erem_id)
         if rule_fn is None:
+            skipped_no_rule += 1
+            logger.debug("skip no_rule | user=%s medal=%s", user, erem_id)
             continue
 
         try:
             earned = rule_fn(user, session_id, engine)
-        except Exception:  # noqa: BLE001 – rules must not crash the game
+        except Exception as exc:  # noqa: BLE001 – rules must not crash the game
+            rule_errors.append(erem_id)
+            logger.warning(
+                "rule_error | user=%s medal=%s error=%s",
+                user, erem_id, exc, exc_info=True,
+            )
             continue
+
+        logger.debug(
+            "rule_result | user=%s medal=%s session=%s result=%s",
+            user, erem_id, session_id, earned,
+        )
 
         if earned:
             expires_at: datetime | None = None
@@ -620,6 +646,20 @@ def check_new_medals(
                 expires_at = now + timedelta(days=erem.ervenyes_napig)
             repo.grant_erem(user, erem_id, lejarat_at=expires_at)
             newly_earned.append(erem)
+            logger.info(
+                "medal_granted | user=%s medal=%s nev=%r session=%s expires=%s",
+                user, erem_id, erem.nev, session_id,
+                expires_at.isoformat() if expires_at else None,
+            )
+
+    logger.info(
+        "check_new_medals done | user=%s session=%s granted=%d "
+        "skipped_owned=%d skipped_no_rule=%d errors=%d",
+        user, session_id, len(newly_earned),
+        skipped_already_has, skipped_no_rule, len(rule_errors),
+    )
+    if rule_errors:
+        logger.warning("rule_errors detail | user=%s medals=%s", user, rule_errors)
 
     return newly_earned
 
@@ -641,3 +681,55 @@ def get_all_medals_for_user(
         if erem is not None:
             result.append((erem, fe))
     return result
+
+
+# ---------------------------------------------------------------------------
+# Rule simulation (dry-run, no DB writes)
+# ---------------------------------------------------------------------------
+
+from dataclasses import dataclass as _dataclass
+from typing import Optional as _Optional
+
+
+@_dataclass
+class RuleSimResult:
+    erem_id: str
+    nev: str
+    ikon: str
+    result: bool
+    already_earned: bool
+    ismetelheto: bool
+    error: _Optional[str] = None
+
+
+def simulate_medal_rules(
+    user: str,
+    engine: "Engine",
+    earned_erem_ids: set[str],
+) -> list[RuleSimResult]:
+    """Evaluate every registered rule for *user* without awarding anything.
+
+    Returns one RuleSimResult per registered rule.
+    """
+    results: list[RuleSimResult] = []
+    for erem_id, rule_fn in SZABALY_REGISTRY.items():
+        erem = EREM_KATALOGUS.get(erem_id)
+        nev = erem.nev if erem else erem_id
+        ikon = erem.ikon if erem else "🏅"
+        ismetelheto = erem.ismetelheto if erem else False
+        try:
+            rule_result = rule_fn(user, None, engine)
+            error = None
+        except Exception as exc:
+            rule_result = False
+            error = str(exc)
+        results.append(RuleSimResult(
+            erem_id=erem_id,
+            nev=nev,
+            ikon=ikon,
+            result=bool(rule_result),
+            already_earned=erem_id in earned_erem_ids,
+            ismetelheto=ismetelheto,
+            error=error,
+        ))
+    return results

@@ -17,6 +17,10 @@ from typing import Annotated, Optional
 
 import typer
 
+from felvi_games.config import setup_logging
+
+setup_logging()
+
 app = typer.Typer(
     name="felvi",
     help="Felvételi feladatsor eszközök",
@@ -566,6 +570,101 @@ def medal_delete_cmd(
     else:
         typer.echo(f"[!] Nem található: {id}")
         raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# felvi user-stats
+# ---------------------------------------------------------------------------
+
+@app.command("user-stats")
+def user_stats_cmd(
+    user: Annotated[str, typer.Argument(help="Felhasználó neve (pl. 'Lackó')")],
+    db: Annotated[
+        Optional[Path], typer.Option("--db", help="SQLite DB útvonala (alap: FELVI_DB env)")
+    ] = None,
+    simulate: Annotated[
+        bool, typer.Option("--simulate", help="Éremszabályok szimulációja (nem ment semmit)")
+    ] = False,
+) -> None:
+    """Egy felhasználó részletes statisztikája és éremszabály-kiértékelése."""
+    from felvi_games.achievements import EREM_KATALOGUS, simulate_medal_rules
+    from felvi_games.config import get_db_path
+    from felvi_games.db import FeladatRepository, get_engine
+
+    db_path = db or get_db_path()
+    if not db_path.exists():
+        typer.echo(f"[!] DB nem található: {db_path}")
+        raise typer.Exit(code=1)
+
+    repo = FeladatRepository(db_path)
+    stats = repo.get_user_stats(user)
+    if stats is None:
+        typer.echo(f"[!] Ismeretlen felhasználó: '{user}'")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"\n{'='*60}")
+    typer.echo(f"  Felhasználó: {stats.nev}  (id={stats.id})")
+    typer.echo(f"  Regisztrált: {stats.created_at}")
+    typer.echo(f"{'='*60}")
+
+    typer.echo("\n--- Menetek ---")
+    typer.echo(f"  Összes menet:       {stats.menetek_ossz}")
+    typer.echo(f"  Befejezett:         {stats.menetek_befejezett}")
+    typer.echo(f"  Megoldott feladat:  {stats.megoldott_ossz} / {stats.tervezett_ossz}")
+    typer.echo(f"  Összpontszám:       {stats.pont_ossz}")
+    typer.echo(f"  Első menet:         {stats.elso_menet}")
+    typer.echo(f"  Utolsó menet:       {stats.utolso_menet}")
+
+    typer.echo("\n--- Válaszok ---")
+    typer.echo(f"  Összes válasz:      {stats.valaszok_ossz}")
+    typer.echo(f"  Helyes:             {stats.helyes_ossz}  ({stats.accuracy_pct:.1f}%)")
+    typer.echo(f"  Átlag idő:          {f'{stats.atlag_mp:.1f}s' if stats.atlag_mp else '-'}")
+    typer.echo(f"  Leggyorsabb:        {f'{stats.min_mp:.1f}s' if stats.min_mp else '-'}")
+    typer.echo(f"  Segítséget kért:    {stats.hint_ossz}")
+
+    typer.echo("\n--- Tárgyak / Szintek ---")
+    for targy, szint, n in stats.targy_szint:
+        typer.echo(f"  {targy} / {szint}: {n} menet")
+
+    typer.echo(f"\n--- Játéknapok ({len(stats.jateknapok)} különböző nap) ---")
+    for nap, n in stats.jateknapok:
+        typer.echo(f"  {nap}  ({n} menet)")
+
+    typer.echo(f"\n--- Megszerzett érmek ({len(stats.eremek)}) ---")
+    if not stats.eremek:
+        typer.echo("  (még nincs)")
+    for fe in stats.eremek:
+        erem = EREM_KATALOGUS.get(fe.erem_id)
+        nev = erem.nev if erem else fe.erem_id
+        ikon = erem.ikon if erem else "🏅"
+        szamlalo = f" ×{fe.szamlalo}" if fe.szamlalo > 1 else ""
+        lejarat = f"  [lejár: {fe.lejarat}]" if fe.lejarat else ""
+        typer.echo(f"  {ikon} {nev}{szamlalo}  ({fe.szerzett}){lejarat}")
+
+    if simulate:
+        engine = get_engine(db_path)
+        earned_ids = {fe.erem_id for fe in stats.eremek}
+        sim_results = simulate_medal_rules(user, engine, earned_ids)
+        typer.echo(f"\n--- Éremszabály szimuláció ---")
+        typer.echo(f"  {'Érem':<32} {'Teljesül':>8}  Megjegyzés")
+        typer.echo("  " + "-" * 60)
+        for r in sim_results:
+            if r.error:
+                typer.echo(f"  ❌ {r.nev:<32}    HIBA  {r.error}")
+                continue
+            if r.result:
+                if r.already_earned and not r.ismetelheto:
+                    mark, note = "✓", "már megvan"
+                elif r.already_earned:
+                    mark, note = "✓", "ismételné"
+                else:
+                    mark, note = "🏅", ">>> ÚJ ÉREM <<<"
+            else:
+                mark, note = "·", ""
+            typer.echo(f"  {mark} {r.nev:<32} {str(r.result):>8}  {note}")
+        typer.echo()
+
+    typer.echo()
 
 
 # ---------------------------------------------------------------------------
