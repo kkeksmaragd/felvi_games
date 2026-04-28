@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    func,
     or_,
     select,
 )
@@ -721,6 +722,28 @@ class FeladatRepository:
                 "correct": helyes,
                 "accuracy": round(helyes / total * 100, 1) if total else 0.0,
             }
+
+    def get_feladat_attempt_counts(
+        self, felhasznalo_nev: str, feladat_ids: list[str]
+    ) -> dict[str, int]:
+        """Return how many times *felhasznalo_nev* has attempted each feladat.
+
+        Only feladat_ids present in *feladat_ids* are queried.
+        Missing entries default to 0.
+        """
+        if not feladat_ids:
+            return {}
+        with Session(self._engine) as session:
+            rows = session.execute(
+                select(MegoldasRecord.feladat_id, func.count().label("n"))
+                .where(MegoldasRecord.felhasznalo_nev == felhasznalo_nev)
+                .where(MegoldasRecord.feladat_id.in_(feladat_ids))
+                .group_by(MegoldasRecord.feladat_id)
+            ).all()
+        counts = {row.feladat_id: int(row.n) for row in rows}
+        for fid in feladat_ids:
+            counts.setdefault(fid, 0)
+        return counts
 
     # --- Felhasznalo & Menet ---
 

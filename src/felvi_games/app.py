@@ -101,6 +101,13 @@ def _group_members(feladat: Feladat, keszlet: list[Feladat]) -> list[Feladat]:
     )
 
 
+def _least_seen_choice(candidates: list[Feladat], counts: dict[str, int]) -> Feladat:
+    """Return a random feladat from the least-attempted tier in *candidates*."""
+    min_count = min(counts.get(f.id, 0) for f in candidates)
+    pool = [f for f in candidates if counts.get(f.id, 0) == min_count]
+    return random.choice(pool)
+
+
 def next_feladat(feladatok: dict[str, list[Feladat]], gs: GameState) -> Feladat | None:
     keszlet = feladatok.get(gs.targy, [])
     if gs.szint != "mind":
@@ -124,27 +131,47 @@ def next_feladat(feladatok: dict[str, list[Feladat]], gs: GameState) -> Feladat 
     # How many questions remain in the current session?
     hátralevo = max(1, gs.menet_cel - gs.menet_megoldott)
 
+    # Fetch per-feladat attempt counts for the current user (least-seen priority)
+    user = gs.felhasznalo
+    counts: dict[str, int] = {}
+    if user:
+        counts = get_repo().get_feladat_attempt_counts(user, [f.id for f in maradek])
+
     # Prefer standalone tasks when possible to keep group logic clean
     standalone = [f for f in maradek if not f.csoport_id]
     grouped = [f for f in maradek if f.csoport_id]
 
-    # Try to pick a group whose full (unsolved) member list fits the quota
-    random.shuffle(grouped)
+    # Try to pick a group whose full (unsolved) member list fits the quota.
+    # Among eligible groups prefer the one whose members have the lowest total
+    # attempt count for this user.
+    eligible_groups: list[tuple[int, list[Feladat]]] = []
+    seen_csoport: set[str] = set()
     for candidate in grouped:
+        cid = candidate.csoport_id
+        if cid in seen_csoport:
+            continue
+        seen_csoport.add(cid)  # type: ignore[arg-type]
         members = _group_members(candidate, keszlet)
         unsolved = [f for f in members if f.id not in gs.megoldott_ids]
         if not unsolved:
             continue
         if len(unsolved) <= hátralevo:
-            # Enqueue the whole group in order; return first immediately
-            gs.feladat_sor = [f.id for f in unsolved[1:]]
-            return unsolved[0]
+            total_count = sum(counts.get(f.id, 0) for f in unsolved)
+            eligible_groups.append((total_count, unsolved))
 
-    # No group fits → fall back to a standalone task
+    if eligible_groups:
+        # Pick a random group from the least-attempted tier
+        min_total = min(g[0] for g in eligible_groups)
+        best_groups = [g[1] for g in eligible_groups if g[0] == min_total]
+        chosen_unsolved = random.choice(best_groups)
+        gs.feladat_sor = [f.id for f in chosen_unsolved[1:]]
+        return chosen_unsolved[0]
+
+    # No group fits → fall back to a standalone task (least-seen first)
     if standalone:
-        return random.choice(standalone)
+        return _least_seen_choice(standalone, counts)
 
-    # Last resort: pick any remaining task (or force-enqueue the smallest group)
+    # Last resort: force-enqueue the smallest group
     if grouped:
         candidate = min(
             grouped,
@@ -156,7 +183,7 @@ def next_feladat(feladatok: dict[str, list[Feladat]], gs: GameState) -> Feladat 
             gs.feladat_sor = [f.id for f in unsolved[1:]]
             return unsolved[0]
 
-    return random.choice(maradek)
+    return _least_seen_choice(maradek, counts)
 
 
 def start_kerdes(feladat: Feladat, gs: GameState) -> None:
