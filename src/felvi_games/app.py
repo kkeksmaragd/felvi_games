@@ -474,28 +474,24 @@ def _render_kerdes(gs: GameState) -> None:
         feladat.valaszlehetosegek
         and feladat.feladat_tipus not in ("tobbvalasztos", "igaz_hamis")
     ):
-        with st.expander("📋 Válaszlehetőségek", expanded=True):
+        with st.expander("📋 Válaszlehetőségek", expanded=False):
             for opt in feladat.valaszlehetosegek:
                 st.markdown(f"- {opt}")
 
-    # --- Értékelési megjegyzés ---
-    if feladat.ertekeles_megjegyzes:
-        with st.expander("ℹ️ Értékelési feltétel"):
-            st.caption(feladat.ertekeles_megjegyzes)
-
-    # --- Ábra figyelmeztetés + PDF gomb ---
-    if feladat.abra_van:
-        page_hint = f"\n\n📍 Feladat helye: **{feladat.feladat_oldal}. oldal**" if feladat.feladat_oldal else ""
-        st.warning(
-            "⚠️ Ez a feladat ábrára / grafikonra hivatkozik – "
-            f"az alábbi gombbal nyisd meg az eredeti feladatlapot!{page_hint}"
-        )
-    _render_pdf_button(feladat)
+    # --- Ábra figyelmeztetés + PDF gomb egy sorban ---
+    if feladat.abra_van or feladat.fl_pdf_path:
+        col_abra, col_pdf = st.columns([3, 1])
+        with col_abra:
+            if feladat.abra_van:
+                page_hint = f" · **{feladat.feladat_oldal}. oldal**" if feladat.feladat_oldal else ""
+                st.warning(f"⚠️ Ábrára hivatkozik!{page_hint}")
+        with col_pdf:
+            _render_pdf_button(feladat)
 
     # --- TTS, Tipp, Hiba gombok ---
     col_tts, col_hint, col_hiba = st.columns(3)
     with col_tts:
-        if st.button("🔊 Feladat felolvasása"):
+        if st.button("🔊 Felolvasás"):
             if feladat.tts_kerdes_path:
                 gs.tts_audio = resolve_asset(feladat.tts_kerdes_path).read_bytes()
             else:
@@ -532,12 +528,7 @@ def _render_kerdes(gs: GameState) -> None:
     if gs.segitseg_kert:
         st.info(f"💡 **Tipp:** {feladat.hint}")
 
-    # --- Forrásszöveg (debug / kontextus) ---
-    _render_source_expanders(feladat, show_ut=False)
-
-    st.markdown("---")
-    st.markdown("### Válaszolj:")
-
+    # --- Válasz ---
     valasz = _render_valasz_input(feladat, gs)
 
     if valasz:
@@ -603,6 +594,14 @@ def _render_kerdes(gs: GameState) -> None:
         if st.button("↩ Vissza", use_container_width=True):
             gs.fazis = Fazis.VALASZTAS
             st.rerun()
+
+    # --- Kevésbé fontos elemek a válaszmező alatt ---
+    if feladat.ertekeles_megjegyzes:
+        with st.expander("ℹ️ Értékelési feltétel"):
+            st.caption(feladat.ertekeles_megjegyzes)
+
+    _render_source_expanders(feladat, show_ut=False)
+
 
 
 def _render_eredmeny(feladatok: dict[str, list[Feladat]], gs: GameState) -> None:
