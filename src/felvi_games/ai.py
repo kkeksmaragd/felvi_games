@@ -208,9 +208,28 @@ def generate_medal_hang(nev: str, leiras: str) -> bytes:
 _DAILY_INSIGHT_SYSTEM = (
     "Magyar felvételi kvíz coach vagy. "
     "A játékos napi belépésekor rövid, személyes motiváló üzenetet írsz, "
-    "és esetleg javaslatot teszel egy egyedi napi kihívás éremre. "
+    "és esetleg javaslatot teszel egy egyedi időkorlátozott kihívás éremre. "
     "Mindig magyarul válaszolj. Légy lelkesítő, tömör (max 3 mondat az üzenetben)."
 )
+
+# Supported condition types for dynamic medals.
+# window_hours: the time window within which the condition must be met (1–18h).
+_CONDITION_TYPES_DOC = """\
+Elérhető condition type értékek (gépileg kiértékelhető):
+  feladat_count      – {"type":"feladat_count","n":5,"window_hours":12}
+  helyes_count       – {"type":"helyes_count","n":3,"window_hours":8}
+  pont_sum           – {"type":"pont_sum","n":20,"window_hours":18}
+  streak             – {"type":"streak","n":5,"window_hours":18}  (all-time legjobb sorozat)
+  session_count      – {"type":"session_count","n":2,"window_hours":6}
+  tokeletes_session  – {"type":"tokeletes_session","window_hours":18}
+  feladat_subject    – {"type":"feladat_subject","n":5,"subject":"matek","window_hours":12}
+  before_hour        – {"type":"before_hour","n":3,"hour":8,"window_hours":18}
+  after_hour         – {"type":"after_hour","n":3,"hour":20,"window_hours":18}
+  special_date       – {"type":"special_date","date":"MM-DD","feladat_count":1}
+
+FONTOS: n és window_hours legyen reálisan elérhető a statisztikák alapján.
+window_hours: 1–18 között legyen (rövid idejű kihívás).
+A "leiras" mező foglalja össze röviden a feltételt (pl. "Oldj meg 5 feladatot 8 órán belül!")."""
 
 _DAILY_INSIGHT_TEMPLATE = """\
 Felhasználó: {user}
@@ -228,10 +247,13 @@ Statisztikák:
 Közel lévő érmek (progress 0–1):
 {close_medals_text}
 
+{condition_types_doc}
+
 Feladatod:
 1. Írj egy rövid, személyre szabott motiváló üzenetet (greeting).
-2. Opcionálisan javasolj egy privát napi kihívás érmet amelyet a felhasználó
-   a KÖVETKEZŐ belépésig megszerezhet, HA van erre reális lehetőség a statisztikák alapján.
+2. Javasolj egy privát időkorlátozott kihívás érmet amelyet a felhasználó
+   a következő {window_hours} órán belül megszerezhet, HA van erre reális lehetőség.
+   Válassz egy gépileg kiértékelhető condition type-ot (lásd fent).
    Ha nincs jó ötlet, hagyj new_medal null-on.
 
 Válaszolj CSAK JSON-ban:
@@ -239,11 +261,11 @@ Válaszolj CSAK JSON-ban:
   "greeting": "...",
   "new_medal": {{
     "nev": "...",
-    "leiras": "Pontosan mit kell elérni (pl. 10 feladatot hibátlanul)",
+    "leiras": "Rövid magyar leírás a feltételről (pl. 5 feladat 8 órán belül)",
     "ikon": "emoji",
     "kategoria": "teljesitmeny|merfoldko|rendszeresseg|felfedezes|kitartas",
-    "ideiglenes": true,
-    "ervenyes_napig": 3
+    "ervenyes_napig": 1,
+    "condition": {{ ...egy condition objektum a fentiek közül... }}
   }} | null
 }}"""
 
@@ -253,6 +275,8 @@ def generate_daily_insight(
     stats: dict,
     close_medals: list,
     earned_count: int,
+    *,
+    window_hours: int = 18,
 ) -> dict:
     """Ask the LLM for a motivational greeting and an optional new medal suggestion.
 
@@ -261,9 +285,11 @@ def generate_daily_insight(
         stats:        Dict from ``progress_check.get_user_stats()``.
         close_medals: List of ``CloseMedal`` objects.
         earned_count: How many medals the user has earned so far.
+        window_hours: Validity window for the dynamic challenge medal (1–18h).
 
     Returns:
         Dict with ``greeting`` (str) and ``new_medal`` (dict | None).
+        ``new_medal`` includes a ``condition`` dict for machine evaluation.
     """
     close_text = "\n".join(
         f"  - {cm.erem.ikon} {cm.erem.nev}: {cm.hint} ({int(cm.progress * 100)}%)"
@@ -274,6 +300,8 @@ def generate_daily_insight(
         user=user,
         close_medals_text=close_text,
         earned_count=earned_count,
+        condition_types_doc=_CONDITION_TYPES_DOC,
+        window_hours=window_hours,
         **{k: stats[k] for k in (
             "total_attempts", "accuracy_pct", "completed_sessions",
             "current_streak_days", "recent_days_7d",
@@ -289,7 +317,7 @@ def generate_daily_insight(
         ],
         response_format={"type": "json_object"},
         temperature=0.8,
-        max_tokens=400,
+        max_tokens=500,
     )
     raw = response.choices[0].message.content or "{}"
     try:

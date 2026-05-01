@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+import random
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -328,37 +329,54 @@ def daily_check(
 
     earned_count = len(repo.get_eremek(user, include_expired=True))
 
+    # 40% random gate: only sometimes introduce a new dynamic challenge medal
+    introduce_new_medal = random.random() < 0.40
+    window_hours = random.choice([1, 2, 3, 4, 6, 8, 10, 12, 18]) if introduce_new_medal else 18
+
     # Ask AI for a greeting + optional new private medal
     try:
         from felvi_games.ai import generate_daily_insight
-        ai_result = generate_daily_insight(user, stats, close, earned_count)
+        ai_result = generate_daily_insight(
+            user, stats, close, earned_count, window_hours=window_hours
+        )
     except Exception:  # noqa: BLE001
         ai_result = {"greeting": f"Helló {user}! Üdv vissza a játékban! 🎉", "new_medal": None}
 
     greeting: str = ai_result.get("greeting", f"Üdv, {user}!")
 
-    # Create new private medal if AI suggested one
+    # Create new private medal if AI suggested one AND the 40% gate fired
     new_medal: Erem | None = None
     new_medal_created = False
-    medal_data = ai_result.get("new_medal")
+    medal_data = ai_result.get("new_medal") if introduce_new_medal else None
     if medal_data and isinstance(medal_data, dict):
         try:
             import re
-            erem_id = f"daily_{user.lower()}_{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+            erem_id = f"daily_{user.lower()}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M')}"
             erem_id = re.sub(r"[^a-z0-9_]", "_", erem_id)
             existing = repo.get_erem_katalogus(user)
-            if erem_id not in existing:
+            # Don't stack more than 2 active dynamic medals per user
+            active_dynamic = [
+                eid for eid in existing
+                if eid.startswith("daily_") and not repo.has_erem(user, eid)
+            ]
+            if len(active_dynamic) < 2 and erem_id not in existing:
+                condition = medal_data.get("condition")
+                ervenyes_napig = medal_data.get("ervenyes_napig", 1)
+                # Clamp to at most ceil(window_hours/24) days so expiry matches the window
+                import math
+                ervenyes_napig = max(1, min(ervenyes_napig, math.ceil(window_hours / 24)))
                 new_medal = Erem(
                     id=erem_id,
                     nev=medal_data.get("nev", "Napi kihívás"),
                     leiras=medal_data.get("leiras", ""),
                     ikon=medal_data.get("ikon", "🌟"),
                     kategoria=medal_data.get("kategoria", "teljesitmeny"),
-                    ideiglenes=medal_data.get("ideiglenes", True),
-                    ervenyes_napig=medal_data.get("ervenyes_napig", 7),
+                    ideiglenes=True,
+                    ervenyes_napig=ervenyes_napig,
                     ismetelheto=False,
                     privat=True,
                     cel_felhasznalo=user,
+                    condition=condition if isinstance(condition, dict) else None,
                 )
                 repo.upsert_erem(new_medal)
                 new_medal_created = True

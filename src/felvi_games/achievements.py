@@ -683,6 +683,161 @@ def _rule_heti_bajnok(user: str, session_id: int | None, engine: "Engine") -> bo
 
 
 # ---------------------------------------------------------------------------
+# Dynamic condition evaluator
+# Evaluates LLM-generated structured conditions stored in Erem.condition.
+#
+# Supported condition types:
+#   feladat_count        – solve N tasks within window_hours
+#   helyes_count         – N correct answers within window_hours
+#   pont_sum             – earn N total points within window_hours
+#   streak               – N consecutive correct answers (all-time best)
+#   session_count        – start N sessions within window_hours
+#   tokeletes_session    – complete a perfect session within window_hours
+#   feladat_subject      – N tasks of given subject within window_hours
+#   before_hour          – N answers submitted before hour H within window_hours
+#   after_hour           – N answers submitted at or after hour H within window_hours
+#   special_date         – feladat_count tasks on a specific date MM-DD
+# ---------------------------------------------------------------------------
+
+def _eval_dynamic_condition(
+    user: str,
+    condition: dict,
+    engine: "Engine",
+) -> bool:
+    """Evaluate a dynamic (LLM-generated) medal condition. Returns bool."""
+    from felvi_games.db import MegoldasRecord, MenetRecord
+
+    ctype = condition.get("type", "")
+    n = int(condition.get("n", 1))
+    window_h = float(condition.get("window_hours", 24))
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=window_h)
+
+    with Session(engine) as s:
+        if ctype == "feladat_count":
+            cnt = s.scalar(
+                select(func.count()).select_from(MegoldasRecord)
+                .where(MegoldasRecord.felhasznalo_nev == user,
+                       MegoldasRecord.created_at >= cutoff)
+            ) or 0
+            return cnt >= n
+
+        elif ctype == "helyes_count":
+            cnt = s.scalar(
+                select(func.count()).select_from(MegoldasRecord)
+                .where(MegoldasRecord.felhasznalo_nev == user,
+                       MegoldasRecord.helyes == True,  # noqa: E712
+                       MegoldasRecord.created_at >= cutoff)
+            ) or 0
+            return cnt >= n
+
+        elif ctype == "pont_sum":
+            total = s.scalar(
+                select(func.sum(MegoldasRecord.pont))
+                .where(MegoldasRecord.felhasznalo_nev == user,
+                       MegoldasRecord.created_at >= cutoff)
+            ) or 0
+            return total >= n
+
+        elif ctype == "streak":
+            rows = s.scalars(
+                select(MegoldasRecord.helyes)
+                .where(MegoldasRecord.felhasznalo_nev == user)
+                .order_by(MegoldasRecord.created_at)
+            ).all()
+            best = cur = 0
+            for h in rows:
+                if h:
+                    cur += 1
+                    best = max(best, cur)
+                else:
+                    cur = 0
+            return best >= n
+
+        elif ctype == "session_count":
+            cnt = s.scalar(
+                select(func.count()).select_from(MenetRecord)
+                .where(MenetRecord.felhasznalo_nev == user,
+                       MenetRecord.started_at >= cutoff)
+            ) or 0
+            return cnt >= n
+
+        elif ctype == "tokeletes_session":
+            from felvi_games.db import MenetRecord as MR
+            menet_ids = list(s.scalars(
+                select(MR.id)
+                .where(MR.felhasznalo_nev == user,
+                       MR.ended_at.is_not(None),
+                       MR.started_at >= cutoff)
+            ).all())
+            for mid in menet_ids:
+                rec = s.get(MR, mid)
+                if rec is None or rec.feladat_limit <= 0 or rec.megoldott < rec.feladat_limit:
+                    continue
+                total = s.scalar(
+                    select(func.count()).select_from(MegoldasRecord)
+                    .where(MegoldasRecord.menet_id == mid)
+                ) or 0
+                helyes_cnt = s.scalar(
+                    select(func.count()).select_from(MegoldasRecord)
+                    .where(MegoldasRecord.menet_id == mid,
+                           MegoldasRecord.helyes == True)  # noqa: E712
+                ) or 0
+                if total > 0 and total == helyes_cnt == rec.feladat_limit:
+                    return True
+            return False
+
+        elif ctype == "feladat_subject":
+            subject = condition.get("subject", "")
+            from felvi_games.db import MenetRecord as MR
+            cnt = s.scalar(
+                select(func.count()).select_from(MegoldasRecord)
+                .join(MR, MR.id == MegoldasRecord.menet_id)
+                .where(MegoldasRecord.felhasznalo_nev == user,
+                       MR.targy == subject,
+                       MegoldasRecord.created_at >= cutoff)
+            ) or 0
+            return cnt >= n
+
+        elif ctype == "before_hour":
+            hour = int(condition.get("hour", 8))
+            cnt = s.scalar(
+                select(func.count()).select_from(MegoldasRecord)
+                .where(
+                    MegoldasRecord.felhasznalo_nev == user,
+                    MegoldasRecord.created_at >= cutoff,
+                    func.strftime("%H", MegoldasRecord.created_at) < f"{hour:02d}",
+                )
+            ) or 0
+            return cnt >= n
+
+        elif ctype == "after_hour":
+            hour = int(condition.get("hour", 22))
+            cnt = s.scalar(
+                select(func.count()).select_from(MegoldasRecord)
+                .where(
+                    MegoldasRecord.felhasznalo_nev == user,
+                    MegoldasRecord.created_at >= cutoff,
+                    func.strftime("%H", MegoldasRecord.created_at) >= f"{hour:02d}",
+                )
+            ) or 0
+            return cnt >= n
+
+        elif ctype == "special_date":
+            date_mmdd = condition.get("date", "")  # e.g. "05-01"
+            feladat_n = int(condition.get("feladat_count", 1))
+            cnt = s.scalar(
+                select(func.count()).select_from(MegoldasRecord)
+                .where(
+                    MegoldasRecord.felhasznalo_nev == user,
+                    func.strftime("%m-%d", MegoldasRecord.created_at) == date_mmdd,
+                )
+            ) or 0
+            return cnt >= feladat_n
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Rule registry
 # Each entry: (rule_fn, permanent_only=False|True)
 # permanent_only=True  → only award once; never re-check once earned
@@ -761,22 +916,34 @@ def check_new_medals(
             logger.debug("skip already_earned | user=%s medal=%s", user, erem_id)
             continue
 
-        # No rule registered → manual-grant only, skip auto-check
+        # No rule registered → check for dynamic condition, else manual-grant only
         rule_fn = SZABALY_REGISTRY.get(erem_id)
         if rule_fn is None:
-            skipped_no_rule += 1
-            logger.debug("skip no_rule | user=%s medal=%s", user, erem_id)
-            continue
-
-        try:
-            earned = rule_fn(user, session_id, engine)
-        except Exception as exc:  # noqa: BLE001 – rules must not crash the game
-            rule_errors.append(erem_id)
-            logger.warning(
-                "rule_error | user=%s medal=%s error=%s",
-                user, erem_id, exc, exc_info=True,
-            )
-            continue
+            if erem.condition:
+                # Dynamic LLM-generated condition
+                try:
+                    earned = _eval_dynamic_condition(user, erem.condition, engine)
+                except Exception as exc:  # noqa: BLE001
+                    rule_errors.append(erem_id)
+                    logger.warning(
+                        "dynamic_rule_error | user=%s medal=%s error=%s",
+                        user, erem_id, exc, exc_info=True,
+                    )
+                    continue
+            else:
+                skipped_no_rule += 1
+                logger.debug("skip no_rule | user=%s medal=%s", user, erem_id)
+                continue
+        else:
+            try:
+                earned = rule_fn(user, session_id, engine)
+            except Exception as exc:  # noqa: BLE001 – rules must not crash the game
+                rule_errors.append(erem_id)
+                logger.warning(
+                    "rule_error | user=%s medal=%s error=%s",
+                    user, erem_id, exc, exc_info=True,
+                )
+                continue
 
         logger.debug(
             "rule_result | user=%s medal=%s session=%s result=%s",
@@ -852,9 +1019,12 @@ def simulate_medal_rules(
 ) -> list[RuleSimResult]:
     """Evaluate every registered rule for *user* without awarding anything.
 
-    Returns one RuleSimResult per registered rule.
+    Returns one RuleSimResult per registered rule (static) plus any dynamic
+    medals in the catalog that have a condition but no registered rule.
     """
     results: list[RuleSimResult] = []
+
+    # Static rules
     for erem_id, rule_fn in SZABALY_REGISTRY.items():
         erem = EREM_KATALOGUS.get(erem_id)
         nev = erem.nev if erem else erem_id
@@ -875,4 +1045,27 @@ def simulate_medal_rules(
             ismetelheto=ismetelheto,
             error=error,
         ))
+
+    # Dynamic medals (not in static registry but have a condition)
+    for erem_id, erem in EREM_KATALOGUS.items():
+        if erem_id in SZABALY_REGISTRY:
+            continue
+        if not erem.condition:
+            continue
+        try:
+            rule_result = _eval_dynamic_condition(user, erem.condition, engine)
+            error = None
+        except Exception as exc:
+            rule_result = False
+            error = str(exc)
+        results.append(RuleSimResult(
+            erem_id=erem_id,
+            nev=erem.nev,
+            ikon=erem.ikon,
+            result=bool(rule_result),
+            already_earned=erem_id in earned_erem_ids,
+            ismetelheto=erem.ismetelheto,
+            error=error,
+        ))
+
     return results

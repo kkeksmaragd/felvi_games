@@ -291,12 +291,20 @@ class EremRecord(Base):
     gif_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     privat: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     cel_felhasznalo: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    condition_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON dynamic condition
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )
     updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     def to_domain(self) -> Erem:
+        condition: dict | None = None
+        if self.condition_json:
+            try:
+                import json as _json
+                condition = _json.loads(self.condition_json)
+            except Exception:
+                condition = None
         return Erem(
             id=self.id,
             nev=self.nev,
@@ -311,6 +319,7 @@ class EremRecord(Base):
             gif_url=self.gif_url,
             privat=self.privat,
             cel_felhasznalo=self.cel_felhasznalo,
+            condition=condition,
         )
 
 
@@ -372,13 +381,7 @@ class FelhasznaloEremRecord(Base):
 
 
 def _ensure_feladat_columns(engine) -> None:
-    """Add new columns to the feladatok table on existing databases.
-
-    SQLAlchemy's create_all() only creates missing *tables*, not missing
-    columns.  This lightweight helper issues ALTER TABLE statements so that
-    existing databases are kept in sync without requiring a full Alembic
-    migration (that comes later).
-    """
+    """Add new columns to the feladatok table on existing databases."""
     new_columns = [
         ("verzio", "INTEGER NOT NULL DEFAULT 1"),
         ("statusz", "VARCHAR(16) NOT NULL DEFAULT 'aktiv'"),
@@ -393,11 +396,26 @@ def _ensure_feladat_columns(engine) -> None:
                 pass  # column already exists – safe to ignore
 
 
+def _ensure_erem_columns(engine) -> None:
+    """Add new columns to the eremek table on existing databases."""
+    new_columns = [
+        ("condition_json", "TEXT"),
+    ]
+    with engine.connect() as conn:
+        for col_name, col_def in new_columns:
+            try:
+                conn.execute(text(f"ALTER TABLE eremek ADD COLUMN {col_name} {col_def}"))
+                conn.commit()
+            except Exception:
+                pass  # column already exists – safe to ignore
+
+
 def init_db(db_path: Path | None = None) -> None:
     """Create all tables if they don't exist, then ensure new columns exist."""
     engine = get_engine(db_path)
     Base.metadata.create_all(engine)
     _ensure_feladat_columns(engine)
+    _ensure_erem_columns(engine)
 
 
 # ---------------------------------------------------------------------------
@@ -1169,6 +1187,8 @@ class FeladatRepository:
 
     def upsert_erem(self, erem: Erem) -> None:
         """Insert or fully update a medal catalog entry."""
+        import json as _json
+        condition_json = _json.dumps(erem.condition, ensure_ascii=False) if erem.condition else None
         with Session(self._engine) as session:
             existing = session.get(EremRecord, erem.id)
             now = datetime.now(timezone.utc)
@@ -1185,6 +1205,7 @@ class FeladatRepository:
                 existing.gif_url = erem.gif_url
                 existing.privat = erem.privat
                 existing.cel_felhasznalo = erem.cel_felhasznalo
+                existing.condition_json = condition_json
                 existing.updated_at = now
             else:
                 session.add(EremRecord(
@@ -1201,6 +1222,7 @@ class FeladatRepository:
                     gif_url=erem.gif_url,
                     privat=erem.privat,
                     cel_felhasznalo=erem.cel_felhasznalo,
+                    condition_json=condition_json,
                 ))
             session.commit()
 

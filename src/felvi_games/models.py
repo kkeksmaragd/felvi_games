@@ -430,6 +430,8 @@ class Erem:
     # --- visibility ---
     privat: bool = False                    # True → only visible / earnable by cel_felhasznalo
     cel_felhasznalo: str | None = None      # specific user this private medal targets
+    # --- dynamic condition (LLM-generated, machine-evaluable) ---
+    condition: dict | None = None           # structured condition dict; see achievements._eval_dynamic_condition
 
 
 @dataclass(frozen=True)
