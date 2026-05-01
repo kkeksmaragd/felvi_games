@@ -240,6 +240,19 @@ Elérhető condition type értékek (gépileg kiértékelhető):
   before_hour        – {"type":"before_hour","n":3,"hour":8,"window_hours":18}
   after_hour         – {"type":"after_hour","n":3,"hour":20,"window_hours":18}
   special_date       – {"type":"special_date","date":"MM-DD","feladat_count":1}
+    interakcio_count   – {"type":"interakcio_count","event_type":"segitseg_kert","n":2,"window_hours":12}
+    interakcio_exists  – {"type":"interakcio_exists","event_type":"ujraertekeles","window_hours":24}
+
+Interakciós feltételnél opcionális további szűrők:
+    - "targy": "matek" | "magyar"
+    - "szint": "4 osztályos" | "6 osztályos" | "8 osztályos"
+    - "feladat_id": "mag4_2021_3_8_a"
+    - "meta_contains": "deferred_reward"
+
+Példa event_type értékek:
+    menet_indul, menet_vegzett, helyes_valasz, reszleges_valasz, helytelen_valasz,
+    segitseg_kert, hibajelezes, targy_valtas, szint_valtas, tts_lejatszo,
+    feladat_kihagyas, ujraertekeles, ujraertekeles_jutalom
 
 FONTOS: n és window_hours legyen reálisan elérhető a statisztikák alapján.
 window_hours: 1–18 között legyen (rövid idejű kihívás).
@@ -331,7 +344,7 @@ def generate_daily_insight(
         ],
         response_format={"type": "json_object"},
         temperature=0.8,
-        max_tokens=500,
+        max_completion_tokens=500,
     )
     raw = response.choices[0].message.content or "{}"
     try:

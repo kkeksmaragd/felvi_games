@@ -319,14 +319,175 @@ def medals(
     dynamic: Annotated[
         bool, typer.Option("--dynamic", help="Csak a dinamikus (LLM-generált) éremszabályok listázása, időrend szerint")
     ] = False,
+    conditions: Annotated[
+        bool, typer.Option("--conditions", help="Dinamikus feltételek listázása (felhasználóra szűrhető)")
+    ] = False,
+    today: Annotated[
+        bool, typer.Option("--today", help="--conditions esetén csak a ma létrehozott dinamikus érmek")
+    ] = False,
+    generate_dry_run: Annotated[
+        bool, typer.Option("--generate-dry-run", help="Új dinamikus éremjavaslat generálása mentés nélkül")
+    ] = False,
+    generate: Annotated[
+        bool, typer.Option("--generate", help="Új dinamikus érem generálása és mentése a katalógusba")
+    ] = False,
+    window_hours: Annotated[
+        int, typer.Option("--window-hours", help="Dry-run javaslat időablaka órában (1-18)")
+    ] = 18,
 ) -> None:
     """Érmek / achievements: katalógus és felhasználói haladás."""
-    from felvi_games.achievements import EREM_KATALOGUS, get_all_medals_for_user
+    import re
+    from datetime import datetime, timezone
+
+    from felvi_games.achievements import (
+        EREM_KATALOGUS,
+        _eval_dynamic_condition,
+        get_all_medals_for_user,
+    )
+    from felvi_games.ai import generate_daily_insight
     from felvi_games.config import get_db_path
     from felvi_games.db import FelhasznaloRecord, FeladatRepository, get_engine
+    from felvi_games.models import Erem
+    from felvi_games.progress_check import estimate_close_medals, get_user_stats
     from sqlalchemy import select, text
     from sqlalchemy.orm import Session
     import json as _json
+
+    if generate and generate_dry_run:
+        typer.echo("[!] A --generate és --generate-dry-run együtt nem használható.")
+        raise typer.Exit(code=2)
+
+    if generate_dry_run or generate:
+        if not user:
+            typer.echo("[!] A --generate/--generate-dry-run használatához add meg a --user opciót.")
+            raise typer.Exit(code=2)
+        if window_hours < 1 or window_hours > 18:
+            typer.echo("[!] A --window-hours értéke 1 és 18 közé essen.")
+            raise typer.Exit(code=2)
+
+        db_path = db or get_db_path()
+        if not db_path.exists():
+            typer.echo(f"[!] DB nem található: {db_path}")
+            raise typer.Exit(code=1)
+
+        repo = FeladatRepository(db_path)
+        stats = get_user_stats(user, repo)
+        close = estimate_close_medals(user, repo, stats)
+        earned_count = len(repo.get_eremek(user, include_expired=True))
+
+        insight = generate_daily_insight(
+            user,
+            stats,
+            close,
+            earned_count,
+            window_hours=window_hours,
+        )
+
+        title = "Dinamikus érem generálás" if generate else "Dinamikus érem dry-run"
+        typer.echo(f"\n=== {title}  (DB: {db_path}) ===\n")
+        typer.echo(f"👤 Felhasználó: {user}")
+        typer.echo(f"🕒 Időablak:    {window_hours} óra")
+        typer.echo(f"\nÜzenet:\n  {insight.get('greeting', '-')}")
+
+        nm = insight.get("new_medal")
+        if not nm:
+            typer.echo("\nJavasolt új érem: nincs (new_medal = null)\n")
+            return
+
+        cond = nm.get("condition") if isinstance(nm, dict) else None
+        typer.echo("\nJavasolt új érem:")
+        typer.echo(f"  Név:       {nm.get('nev', '-')}")
+        typer.echo(f"  Ikon:      {nm.get('ikon', '🏅')}")
+        typer.echo(f"  Kategória: {nm.get('kategoria', '-')}")
+        typer.echo(f"  Leírás:    {nm.get('leiras', '-')}")
+        typer.echo(f"  Feltétel:  {_json.dumps(cond, ensure_ascii=False)}")
+        try:
+            now_ok = _eval_dynamic_condition(user, cond or {}, repo._engine)
+            typer.echo(f"  Teljesül most: {'igen' if now_ok else 'nem'}")
+        except Exception as exc:  # noqa: BLE001
+            typer.echo(f"  Teljesül most: hiba ({exc})")
+
+        if generate:
+            safe_user = re.sub(r"[^a-z0-9]+", "_", user.lower()).strip("_") or "user"
+            erem_id = f"dyn_{safe_user}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+            erem = Erem(
+                id=erem_id,
+                nev=str(nm.get("nev", "Napi kihívás")),
+                leiras=str(nm.get("leiras", "Időkorlátos napi kihívás")),
+                ikon=str(nm.get("ikon", "🏅")),
+                kategoria=str(nm.get("kategoria", "teljesitmeny")),
+                ideiglenes=True,
+                ervenyes_napig=int(nm.get("ervenyes_napig", 1) or 1),
+                ismetelheto=False,
+                privat=True,
+                cel_felhasznalo=user,
+                condition=cond if isinstance(cond, dict) else None,
+            )
+            repo.upsert_erem(erem)
+            typer.echo(f"\n✅ Mentve: id={erem.id}")
+            typer.echo("   A feltétel mostantól látható a --conditions listában.")
+            typer.echo()
+        else:
+            typer.echo("\n(Mentés nem történt, ez csak dry-run.)\n")
+        return
+
+    if conditions:
+        db_path = db or get_db_path()
+        if not db_path.exists():
+            typer.echo(f"[!] DB nem található: {db_path}")
+            raise typer.Exit(code=1)
+
+        engine = get_engine(db_path)
+        today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+
+        where_parts = ["condition_json IS NOT NULL", "condition_json != ''"]
+        params: dict[str, object] = {}
+        if user:
+            where_parts.append("(cel_felhasznalo IS NULL OR cel_felhasznalo = :u)")
+            params["u"] = user
+        if today:
+            where_parts.append("created_at >= :today_start")
+            params["today_start"] = today_start
+
+        where_sql = " AND ".join(where_parts)
+        with Session(engine) as s:
+            rows = s.execute(
+                text(
+                    "SELECT id, nev, ikon, kategoria, condition_json, created_at, cel_felhasznalo "
+                    f"FROM eremek WHERE {where_sql} ORDER BY created_at DESC"
+                ),
+                params,
+            ).all()
+
+        who = f"  user={user}" if user else ""
+        only_today = "  today_only" if today else ""
+        typer.echo(f"\n=== Dinamikus feltételek  (DB: {db_path}){who}{only_today}  összesen: {len(rows)} ===\n")
+        if not rows:
+            typer.echo("  (Nincs találat.)")
+            if user:
+                typer.echo("  Tipp: próbáld: felvi medals --generate-dry-run --user \"NÉV\"")
+                typer.echo("        vagy mentéshez: felvi medals --generate --user \"NÉV\"")
+            typer.echo()
+            return
+
+        repo = FeladatRepository(db_path)
+        for r in rows:
+            cel = f" → {r.cel_felhasznalo}" if r.cel_felhasznalo else ""
+            typer.echo(f"  {r.created_at}  {r.ikon}  {r.nev}  [{r.kategoria}]{cel}")
+            typer.echo(f"    id: {r.id}")
+            try:
+                cond = _json.loads(r.condition_json)
+                typer.echo(f"    condition: {_json.dumps(cond, ensure_ascii=False)}")
+                if user:
+                    try:
+                        ok = _eval_dynamic_condition(user, cond, repo._engine)
+                        typer.echo(f"    teljesül({user}): {'igen' if ok else 'nem'}")
+                    except Exception as exc:  # noqa: BLE001
+                        typer.echo(f"    teljesül({user}): hiba ({exc})")
+            except Exception:
+                typer.echo(f"    condition_json: {r.condition_json}")
+        typer.echo()
+        return
 
     if dynamic:
         db_path = db or get_db_path()

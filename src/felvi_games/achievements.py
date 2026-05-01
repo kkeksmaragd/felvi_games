@@ -697,6 +697,8 @@ def _rule_heti_bajnok(user: str, session_id: int | None, engine: "Engine") -> bo
 #   before_hour          – N answers submitted before hour H within window_hours
 #   after_hour           – N answers submitted at or after hour H within window_hours
 #   special_date         – feladat_count tasks on a specific date MM-DD
+#   interakcio_count     – N interaction events of a given type within window_hours
+#   interakcio_exists    – at least one interaction event of a given type within window_hours
 # ---------------------------------------------------------------------------
 
 def _eval_dynamic_condition(
@@ -705,7 +707,7 @@ def _eval_dynamic_condition(
     engine: "Engine",
 ) -> bool:
     """Evaluate a dynamic (LLM-generated) medal condition. Returns bool."""
-    from felvi_games.db import MegoldasRecord, MenetRecord
+    from felvi_games.db import InterakcioRecord, MegoldasRecord, MenetRecord
 
     ctype = condition.get("type", "")
     n = int(condition.get("n", 1))
@@ -833,6 +835,45 @@ def _eval_dynamic_condition(
                 )
             ) or 0
             return cnt >= feladat_n
+
+        elif ctype in {"interakcio_count", "interakcio_exists"}:
+            raw_event_type = condition.get("event_type", "")
+            if isinstance(raw_event_type, InterakcioTipus):
+                event_type = raw_event_type.value
+            else:
+                event_type = str(raw_event_type).strip()
+            if not event_type:
+                return False
+
+            stmt = (
+                select(func.count()).select_from(InterakcioRecord)
+                .where(
+                    InterakcioRecord.felhasznalo_nev == user,
+                    InterakcioRecord.tipus == event_type,
+                    InterakcioRecord.created_at >= cutoff,
+                )
+            )
+
+            targy = condition.get("targy")
+            if isinstance(targy, str) and targy.strip():
+                stmt = stmt.where(InterakcioRecord.targy == targy.strip())
+
+            szint = condition.get("szint")
+            if isinstance(szint, str) and szint.strip():
+                stmt = stmt.where(InterakcioRecord.szint == szint.strip())
+
+            feladat_id = condition.get("feladat_id")
+            if isinstance(feladat_id, str) and feladat_id.strip():
+                stmt = stmt.where(InterakcioRecord.feladat_id == feladat_id.strip())
+
+            meta_contains = condition.get("meta_contains")
+            if isinstance(meta_contains, str) and meta_contains.strip():
+                stmt = stmt.where(InterakcioRecord.meta.contains(meta_contains.strip()))
+
+            cnt = s.scalar(stmt) or 0
+            if ctype == "interakcio_exists":
+                return cnt >= 1
+            return cnt >= n
 
     return False
 

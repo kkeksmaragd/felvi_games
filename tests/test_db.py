@@ -8,8 +8,9 @@ import pytest
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
+from felvi_games.achievements import _eval_dynamic_condition
 from felvi_games.db import FeladatRepository, MegoldasRecord
-from felvi_games.models import Ertekeles, Feladat
+from felvi_games.models import Ertekeles, Feladat, InterakcioTipus
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +258,49 @@ class TestMegoldas:
         stats = repo.stats()
         assert stats["total_attempts"] == 0
         assert stats["accuracy"] == 0.0
+
+
+class TestDynamicEventConditions:
+    def test_interakcio_count_matches_event_type(self, repo):
+        repo.log_interakcio("Lori", InterakcioTipus.SEGITSEG_KERT)
+        repo.log_interakcio("Lori", InterakcioTipus.SEGITSEG_KERT)
+        repo.log_interakcio("Lori", InterakcioTipus.TTS_LEJATSZO)
+
+        cond = {
+            "type": "interakcio_count",
+            "event_type": InterakcioTipus.SEGITSEG_KERT,
+            "n": 2,
+            "window_hours": 24,
+        }
+        assert _eval_dynamic_condition("Lori", cond, repo._engine) is True
+
+    def test_interakcio_count_respects_scope_filters(self, repo):
+        repo.log_interakcio("Lori", InterakcioTipus.HELYES_VALASZ, targy="matek", szint="4 osztályos")
+        repo.log_interakcio("Lori", InterakcioTipus.HELYES_VALASZ, targy="magyar", szint="4 osztályos")
+
+        cond = {
+            "type": "interakcio_count",
+            "event_type": InterakcioTipus.HELYES_VALASZ,
+            "n": 2,
+            "targy": "matek",
+            "window_hours": 24,
+        }
+        assert _eval_dynamic_condition("Lori", cond, repo._engine) is False
+
+    def test_interakcio_exists_can_filter_by_meta_contains(self, repo):
+        repo.log_interakcio(
+            "Lori",
+            InterakcioTipus.UJRAERTEKELES_JUTALOM,
+            meta={"awarded_medals": ["villam"], "pending_count": 1},
+        )
+
+        cond = {
+            "type": "interakcio_exists",
+            "event_type": InterakcioTipus.UJRAERTEKELES_JUTALOM,
+            "meta_contains": "awarded_medals",
+            "window_hours": 24,
+        }
+        assert _eval_dynamic_condition("Lori", cond, repo._engine) is True
 
     def test_get_today_stats_counts_only_today(self, repo, feladat_matek):
         repo.upsert(feladat_matek)
