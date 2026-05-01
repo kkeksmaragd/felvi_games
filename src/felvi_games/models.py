@@ -25,6 +25,7 @@ class InterakcioTipus(str, Enum):
     MENET_INDUL = "menet_indul"
     MENET_VEGZETT = "menet_vegzett"
     HELYES_VALASZ = "helyes_valasz"
+    RESZLEGES_VALASZ = "reszleges_valasz"
     HELYTELEN_VALASZ = "helytelen_valasz"
     SEGITSEG_KERT = "segitseg_kert"
     HIBAJELEZES = "hibajelezes"

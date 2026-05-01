@@ -593,6 +593,7 @@ def _render_kerdes(gs: GameState) -> None:
             if gs.felhasznalo:
                 ev_tipus = (
                     InterakcioTipus.HELYES_VALASZ if ert.helyes
+                    else InterakcioTipus.RESZLEGES_VALASZ if ert.pont > 0
                     else InterakcioTipus.HELYTELEN_VALASZ
                 )
                 get_repo().log_interakcio(

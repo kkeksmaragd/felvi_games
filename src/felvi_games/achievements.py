@@ -333,15 +333,24 @@ def _rule_ezer_feladat(user: str, session_id: int | None, engine: "Engine") -> b
 
 
 def _rule_tokeletes_menet(user: str, session_id: int | None, engine: "Engine") -> bool:
-    """True when the current (or any previous) session was 100%."""
-    from felvi_games.db import MenetRecord
+    """True when the current session completed all tasks fully correctly."""
+    from felvi_games.db import MegoldasRecord, MenetRecord
     if session_id is None:
         return False
     with Session(engine) as s:
         rec = s.get(MenetRecord, session_id)
-        if rec is None:
+        if rec is None or rec.feladat_limit <= 0 or rec.megoldott < rec.feladat_limit:
             return False
-        return rec.feladat_limit > 0 and rec.megoldott == rec.feladat_limit and rec.pont == rec.megoldott
+        total = s.scalar(
+            select(func.count()).select_from(MegoldasRecord)
+            .where(MegoldasRecord.menet_id == session_id)
+        ) or 0
+        helyes_cnt = s.scalar(
+            select(func.count()).select_from(MegoldasRecord)
+            .where(MegoldasRecord.menet_id == session_id,
+                   MegoldasRecord.helyes == True)  # noqa: E712
+        ) or 0
+    return total > 0 and total == helyes_cnt == rec.feladat_limit
 
 
 def _rule_sorozat_5(user: str, session_id: int | None, engine: "Engine") -> bool:
@@ -375,14 +384,14 @@ def _max_helyes_sorozat(user: str, engine: "Engine") -> int:
 
 
 def _rule_villam(user: str, session_id: int | None, engine: "Engine") -> bool:
-    """Any answer under 10 seconds."""
+    """Any answer that scored points (including partial) within 10 seconds."""
     from felvi_games.db import MegoldasRecord
     with Session(engine) as s:
         cnt = s.scalar(
             select(func.count()).select_from(MegoldasRecord)
             .where(
                 MegoldasRecord.felhasznalo_nev == user,
-                MegoldasRecord.helyes == True,  # noqa: E712
+                MegoldasRecord.pont > 0,
                 MegoldasRecord.elapsed_sec.is_not(None),
                 MegoldasRecord.elapsed_sec <= 10.0,
             )
@@ -391,15 +400,12 @@ def _rule_villam(user: str, session_id: int | None, engine: "Engine") -> bool:
 
 
 def _rule_hint_nelkul_20(user: str, session_id: int | None, engine: "Engine") -> bool:
-    """Last 20 correct answers without asking for a hint."""
+    """Last 20 answers (any outcome) without asking for a hint."""
     from felvi_games.db import MegoldasRecord
     with Session(engine) as s:
         rows = s.scalars(
             select(MegoldasRecord.segitseg_kert)
-            .where(
-                MegoldasRecord.felhasznalo_nev == user,
-                MegoldasRecord.helyes == True,  # noqa: E712
-            )
+            .where(MegoldasRecord.felhasznalo_nev == user)
             .order_by(MegoldasRecord.created_at.desc())
             .limit(20)
         ).all()
@@ -407,17 +413,25 @@ def _rule_hint_nelkul_20(user: str, session_id: int | None, engine: "Engine") ->
 
 
 def _rule_magas_pontossag(user: str, session_id: int | None, engine: "Engine") -> bool:
-    from felvi_games.db import MegoldasRecord
+    """At least 80% of total possible points earned across 50+ attempts."""
+    from felvi_games.db import FeladatRecord, MegoldasRecord
     with Session(engine) as s:
         total = s.scalar(
             select(func.count()).select_from(MegoldasRecord)
             .where(MegoldasRecord.felhasznalo_nev == user)
         ) or 0
-        helyes = s.scalar(
-            select(func.count()).select_from(MegoldasRecord)
-            .where(MegoldasRecord.felhasznalo_nev == user, MegoldasRecord.helyes == True)  # noqa: E712
+        if total < 50:
+            return False
+        earned = s.scalar(
+            select(func.sum(MegoldasRecord.pont))
+            .where(MegoldasRecord.felhasznalo_nev == user)
         ) or 0
-    return total >= 50 and (helyes / total) >= 0.80
+        max_possible = s.scalar(
+            select(func.sum(FeladatRecord.max_pont))
+            .join(MegoldasRecord, MegoldasRecord.feladat_id == FeladatRecord.id)
+            .where(MegoldasRecord.felhasznalo_nev == user)
+        ) or 0
+    return max_possible > 0 and (earned / max_possible) >= 0.80
 
 
 def _rule_het_egymas_utan(user: str, session_id: int | None, engine: "Engine") -> bool:
