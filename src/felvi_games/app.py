@@ -1028,8 +1028,10 @@ def _render_login(gs: GameState) -> None:
     st.markdown("### Add meg a neved:")
     nev = st.text_input("Neved:", placeholder="pl. Jani", max_chars=64)
     if st.button("Tovább →", type="primary", disabled=not nev.strip()):
-        gs.felhasznalo = nev.strip()
-        get_repo().get_or_create_felhasznalo(nev.strip())
+        from felvi_games.db import FeladatRepository
+        canonical = FeladatRepository.normalize_username(nev)
+        get_repo().get_or_create_felhasznalo(canonical)
+        gs.felhasznalo = canonical
         st.rerun()
 
 
@@ -1047,7 +1049,7 @@ def _load_active_challenges(user: str) -> list[dict]:
     Each item: {id, ikon, nev, leiras, created_at_str, teljesul: bool}
     """
     from datetime import datetime, timezone
-    from felvi_games.achievements import _eval_dynamic_condition
+    from felvi_games.achievements import _eval_dynamic_condition, _count_dynamic_condition
     from sqlalchemy import text
     from sqlalchemy.orm import Session as _S
     import json as _json
@@ -1077,6 +1079,7 @@ def _load_active_challenges(user: str) -> list[dict]:
             if vf is not None and vf.tzinfo is None:
                 vf = vf.replace(tzinfo=timezone.utc)
             teljesul = _eval_dynamic_condition(user, cond, engine, valid_from=vf)
+            cur, target = _count_dynamic_condition(user, cond, engine, valid_from=vf)
             result.append({
                 "id": r.id,
                 "ikon": r.ikon or "🏅",
@@ -1084,6 +1087,8 @@ def _load_active_challenges(user: str) -> list[dict]:
                 "leiras": r.leiras or "",
                 "created_at_str": vf.strftime("%Y-%m-%d %H:%M") if vf else "-",
                 "teljesul": teljesul,
+                "current": cur,
+                "target": target,
             })
         except Exception:  # noqa: BLE001
             pass
@@ -1103,10 +1108,19 @@ def _show_daily_insight_dialog(insight_data: dict) -> None:
     if challenges:
         st.markdown("#### 🏆 Aktív kihívásaid:")
         for ch in challenges:
+            cur = ch.get("current")
+            target = ch.get("target")
             if ch["teljesul"]:
                 st.success(f"{ch['ikon']} **{ch['nev']}** — ✅ Teljesítetted!", icon=None)
             else:
-                st.info(f"{ch['ikon']} **{ch['nev']}**\n\n{ch['leiras']}", icon="⏳")
+                progress_str = ""
+                if cur is not None and target is not None and target > 0:
+                    pct = min(int(cur / target * 100), 100)
+                    progress_str = f"  {cur}/{target} ({pct}%)"
+                    st.info(f"{ch['ikon']} **{ch['nev']}**  {progress_str}\n\n{ch['leiras']}", icon="⏳")
+                    st.progress(pct / 100)
+                else:
+                    st.info(f"{ch['ikon']} **{ch['nev']}**\n\n{ch['leiras']}", icon="⏳")
         st.markdown("---")
 
     close = insight_data.get("close_medals", [])

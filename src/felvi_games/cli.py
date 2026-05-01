@@ -348,6 +348,7 @@ def medals(
     from felvi_games.achievements import (
         EREM_KATALOGUS,
         _eval_dynamic_condition,
+        _count_dynamic_condition,
         get_all_medals_for_user,
     )
     from felvi_games.ai import generate_daily_insight
@@ -573,7 +574,15 @@ def medals(
                         if vf is not None and vf.tzinfo is None:
                             vf = vf.replace(tzinfo=_tz.utc)
                         ok = _eval_dynamic_condition(user, cond, repo._engine, valid_from=vf)
-                        typer.echo(f"    teljesül({user}): {'igen ✅' if ok else 'nem ⏳'}  (számít: {vf} óta)")
+                        cur, target = _count_dynamic_condition(user, cond, repo._engine, valid_from=vf)
+                        progress_str = ""
+                        if cur is not None and target is not None:
+                            bar_filled = min(cur, target)
+                            bar = "█" * bar_filled + "░" * max(0, target - bar_filled)
+                            progress_str = f"  [{bar}]  {cur}/{target}"
+                        status = "✅ teljesítve" if ok else "⏳ folyamatban"
+                        typer.echo(f"    haladás({user}): {status}{progress_str}")
+                        typer.echo(f"    (számít: {vf} óta)")
                     except Exception as exc:  # noqa: BLE001
                         typer.echo(f"    teljesül({user}): hiba ({exc})")
             except Exception:

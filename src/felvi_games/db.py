@@ -1224,19 +1224,48 @@ class FeladatRepository:
 
     # --- Felhasznalo & Menet ---
 
+    @staticmethod
+    def normalize_username(nev: str) -> str:
+        """Canonical form: strip whitespace, title-case the first letter.
+
+        This prevents duplicate accounts from case differences (e.g. 'lóri' vs 'Lóri').
+        Only the very first character is uppercased so names like 'van den Berg' are
+        not mangled.  Hungarian accented letters are handled correctly by str.upper().
+        """
+        stripped = nev.strip()
+        if not stripped:
+            return stripped
+        return stripped[0].upper() + stripped[1:]
+
     def _get_felhasznalo_id(self, nev: str) -> int | None:
         """Resolve a user name to its integer id.  Returns None if not found."""
+        nev = self.normalize_username(nev)
         with Session(self._engine) as session:
             return session.scalar(
                 select(FelhasznaloRecord.id).where(FelhasznaloRecord.nev == nev)
             )
 
     def get_or_create_felhasznalo(self, nev: str) -> int:
-        """Ensure a player record exists and return the user id."""
+        """Ensure a player record exists and return the user id.
+
+        Performs a case-insensitive fallback lookup so that 'lóri' and 'Lóri'
+        resolve to the same account.  The canonical name is the first one ever
+        stored (i.e. we never rename an existing account).
+        """
+        nev = self.normalize_username(nev)
         with Session(self._engine) as session:
+            # 1. Exact match after normalization
             rec = session.scalar(
                 select(FelhasznaloRecord).where(FelhasznaloRecord.nev == nev)
             )
+            if rec is None:
+                # 2. Case-insensitive fallback (handles Hungarian accented chars via Python)
+                all_users = session.scalars(select(FelhasznaloRecord)).all()
+                nev_lower = nev.lower()
+                rec = next(
+                    (u for u in all_users if u.nev.lower() == nev_lower),
+                    None,
+                )
             if rec is None:
                 rec = FelhasznaloRecord(nev=nev)
                 session.add(rec)

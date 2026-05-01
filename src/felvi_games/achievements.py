@@ -890,6 +890,105 @@ def _eval_dynamic_condition(
     return False
 
 
+def _count_dynamic_condition(
+    user: str,
+    condition: dict,
+    engine: "Engine",
+    valid_from: datetime | None = None,
+) -> tuple[int | None, int | None]:
+    """Return (current_value, target_n) for progress display.
+
+    Returns (None, None) for condition types where a scalar count doesn't
+    make sense (e.g. tokeletes_session, special_date).
+    """
+    from felvi_games.db import InterakcioRecord, MegoldasRecord, MenetRecord
+
+    ctype = condition.get("type", "")
+    n = int(condition.get("n", 1))
+    window_h = float(condition.get("window_hours", 24))
+    if valid_from is not None:
+        cutoff = valid_from if valid_from.tzinfo else valid_from.replace(tzinfo=timezone.utc)
+    else:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=window_h)
+
+    with Session(engine) as s:
+        if ctype == "feladat_count":
+            cnt = s.scalar(
+                select(func.count()).select_from(MegoldasRecord)
+                .where(MegoldasRecord.felhasznalo_nev == user,
+                       MegoldasRecord.created_at >= cutoff)
+            ) or 0
+            return cnt, n
+
+        elif ctype == "helyes_count":
+            cnt = s.scalar(
+                select(func.count()).select_from(MegoldasRecord)
+                .where(MegoldasRecord.felhasznalo_nev == user,
+                       MegoldasRecord.helyes == True,  # noqa: E712
+                       MegoldasRecord.created_at >= cutoff)
+            ) or 0
+            return cnt, n
+
+        elif ctype == "pont_sum":
+            total = s.scalar(
+                select(func.sum(MegoldasRecord.pont))
+                .where(MegoldasRecord.felhasznalo_nev == user,
+                       MegoldasRecord.created_at >= cutoff)
+            ) or 0
+            return int(total), n
+
+        elif ctype == "streak":
+            rows = s.scalars(
+                select(MegoldasRecord.helyes)
+                .where(MegoldasRecord.felhasznalo_nev == user)
+                .order_by(MegoldasRecord.created_at)
+            ).all()
+            best = cur = 0
+            for h in rows:
+                if h:
+                    cur += 1
+                    best = max(best, cur)
+                else:
+                    cur = 0
+            return best, n
+
+        elif ctype == "session_count":
+            cnt = s.scalar(
+                select(func.count()).select_from(MenetRecord)
+                .where(MenetRecord.felhasznalo_nev == user,
+                       MenetRecord.started_at >= cutoff)
+            ) or 0
+            return cnt, n
+
+        elif ctype == "feladat_subject":
+            subject = condition.get("subject", "")
+            from felvi_games.db import MenetRecord as MR
+            cnt = s.scalar(
+                select(func.count()).select_from(MegoldasRecord)
+                .join(MR, MR.id == MegoldasRecord.menet_id)
+                .where(MegoldasRecord.felhasznalo_nev == user,
+                       MR.targy == subject,
+                       MegoldasRecord.created_at >= cutoff)
+            ) or 0
+            return cnt, n
+
+        elif ctype in {"interakcio_count", "interakcio_exists"}:
+            raw_event_type = condition.get("event_type", "")
+            event_type = raw_event_type.value if isinstance(raw_event_type, InterakcioTipus) else str(raw_event_type).strip()
+            target = 1 if ctype == "interakcio_exists" else n
+            if not event_type:
+                return None, None
+            cnt = s.scalar(
+                select(func.count()).select_from(InterakcioRecord)
+                .where(InterakcioRecord.felhasznalo_nev == user,
+                       InterakcioRecord.tipus == event_type,
+                       InterakcioRecord.created_at >= cutoff)
+            ) or 0
+            return cnt, target
+
+    return None, None
+
+
 # ---------------------------------------------------------------------------
 # Rule registry
 # Each entry: (rule_fn, permanent_only=False|True)
