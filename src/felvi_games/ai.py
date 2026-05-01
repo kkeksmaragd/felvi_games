@@ -23,19 +23,22 @@ MODEL = os.getenv("LLM_MODEL", "gpt-4o")
 _CHEAP_MODEL = os.getenv("LLM_CHEAP_MODEL", "gpt-4o")
 
 _TTS_PREP_SYSTEM = (
-    "Felolvasáshoz előkészítő asszisztens vagy. "
-    "A feladatod KIZÁRÓLAG formázási átalakítás – NE válaszolj a kérdésre, NE magyarázz, "
-    "NE értékelj. Csak az eredeti szöveget alakítsd át felolvasható formára. "
-    "Kapod a feladat markdown szövegét, és visszaadsz egy természetesen felolvasható "
-    "magyar szöveget, amely UGYANAZT a tartalmat közvetíti. Szabályok: "
-    "- Távolítsd el az összes markdown formázást (**, *, #, backtick, stb.). "
-    "- A LaTeX matematikai jelöléseket ($...$ és $$...$$) alakítsd át természetes szóbeli "
-    "  megfogalmazássá (pl. $x^2$ → 'x négyzet', $\\frac{a}{b}$ → 'a per b'). "
-    "- Táblázatokat, listákat folyó szöveggé fogalmazd át. "
-    "- Számokat, egyenleteket, speciális karaktereket is alakítsd át szöveggé (pl. '3', '≥', '∑' → 'három', 'nagyobb vagy egyenlő', 'szumma'). "
-    "- Legyen természetes, folyékony, felolvasható szöveg. "
-    "- TILOS: válasz adása, magyarázat, értékelés, saját megjegyzés. "
-    "- Csak az átalakított szöveget add vissza, semmi mást."
+    "You are a TTS normalization assistant for Hungarian school exam content. "
+    "Your ONLY task is to rewrite the provided markdown/math text into naturally speakable Hungarian. "
+    "Do not solve, explain, evaluate, simplify, or add extra educational commentary. "
+    "Preserve the original meaning exactly. "
+    "Rules: "
+    "1) Output language must be Hungarian. "
+    "2) Remove markdown formatting (**, *, #, backticks, links), but keep all information content. "
+    "3) Convert LaTeX/math/symbols into spoken Hungarian forms. "
+    "4) Keep proper nouns, abbreviations, labels, and identifiers unless pronunciation needs tiny spacing. "
+    "5) Rewrite bullet lists/tables into fluent sentences without losing items. "
+    "6) Convert operators and symbols to words (>=, <=, !=, %, /, +, -, ^, sqrt, sum, etc.). "
+    "7) If an expression is ambiguous, keep it faithful rather than guessing intent. "
+    "8) Return ONLY the transformed read-aloud text. No prefixes like 'Output:' or notes. "
+    "Example expectation: "
+    "Input: 'Oldd meg: $\\frac{a}{b} \\ge 3$. **Válaszlehetőségek:** A) 1 B) 2 C) 3' "
+    "Output: 'Oldd meg: a per b nagyobb vagy egyenlő három. Válaszlehetőségek: A, egyes. B, kettes. C, hármas.'"
 )
 
 _EVAL_SYSTEM = (
@@ -103,7 +106,15 @@ def kerdes_to_tts_szoveg(kerdes_markdown: str) -> str:
         model=_CHEAP_MODEL,
         messages=[
             {"role": "system", "content": _TTS_PREP_SYSTEM},
-            {"role": "user", "content": kerdes_markdown},
+            {"role": "user", "content": 
+             f"""
+---
+Input:
+{kerdes_markdown}
+---
+Output:
+             """
+             },
         ],
         temperature=0,
         max_tokens=512,

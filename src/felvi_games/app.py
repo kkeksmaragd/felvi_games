@@ -693,12 +693,7 @@ def _render_kerdes(gs: GameState) -> None:
 
     # Resolve kontextus for TTS (group shared text must be read before the question)
     _csoport_tts = get_repo().get_csoport(feladat.csoport_id) if feladat.csoport_id else None
-    _kontextus_tts = (_csoport_tts.kontextus if _csoport_tts else None) or feladat.kontextus
-    if len(_kontextus_tts or "") > 200:
-        # Too long kontextus, only read the question
-        _tts_bemeneti = feladat.kerdes
-    else:
-        _tts_bemeneti = f"{_kontextus_tts}\n\n{feladat.kerdes}" if _kontextus_tts else feladat.kerdes
+    _tts_bemeneti = feladat.kerdes
 
     # Stale when the SHA256 hash of the current raw input differs from the stored hash.
     _bemeneti_hash = hashlib.sha256(_tts_bemeneti.encode()).hexdigest()[:12]
