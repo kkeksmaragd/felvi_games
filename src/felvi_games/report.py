@@ -503,14 +503,13 @@ def generate_charts(data: ReportData, output_dir: Path) -> list[str]:
             fig.suptitle(f"Napi pontosság (user × tárgy)  |  {subtitle}", fontsize=13, fontweight="bold")
             for (u, t) in ut_pairs:
                 vals = acc_series[(u, t)]
-                # plot only non-None segments
+                # plot only non-None segments using numeric indices so they align with set_xticks
                 xs_idx = [i for i, v in enumerate(vals) if v is not None]
-                xs = [all_dates[i] for i in xs_idx]
                 ys = [vals[i] for i in xs_idx]
-                ax.plot(xs, ys, marker="o", label=f"{u} – {t}",
+                ax.plot(xs_idx, ys, marker="o", label=f"{u} – {t}",
                         color=cmap[u], linestyle=ls_map[t], linewidth=2, markersize=5)
-                for x_lbl, v in zip(xs, ys):
-                    ax.annotate(f"{v:.0f}%", (x_lbl, v), textcoords="offset points", xytext=(0, 7),
+                for xi, v in zip(xs_idx, ys):
+                    ax.annotate(f"{v:.0f}%", (xi, v), textcoords="offset points", xytext=(0, 7),
                                 ha="center", fontsize=7.5, color=cmap[u])
             ax.axhline(80, color="#555", linestyle=":", linewidth=1.2, label="80% cél")
             ax.set_xlabel("Dátum", fontsize=10)
