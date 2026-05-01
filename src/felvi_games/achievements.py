@@ -1072,9 +1072,13 @@ def check_new_medals(
         rule_fn = SZABALY_REGISTRY.get(erem_id)
         if rule_fn is None:
             if erem.condition:
-                # Dynamic LLM-generated condition
+                # Dynamic LLM-generated condition: use creation timestamp as anchor
+                # so only events AFTER the medal was created count towards the goal.
                 try:
-                    earned = _eval_dynamic_condition(user, erem.condition, engine)
+                    earned = _eval_dynamic_condition(
+                        user, erem.condition, engine,
+                        valid_from=erem.condition_valid_from,
+                    )
                 except Exception as exc:  # noqa: BLE001
                     rule_errors.append(erem_id)
                     logger.warning(

@@ -1153,6 +1153,229 @@ def check_answer_cmd(
 
 
 # ---------------------------------------------------------------------------
+# felvi medal-check  – dinamikus érem-feltételek újraértékelése
+# ---------------------------------------------------------------------------
+
+@app.command("medal-check")
+def medal_check_cmd(
+    user: Annotated[str, typer.Argument(help="Felhasználó neve (pl. 'Lóri')")],
+    db: Annotated[
+        Optional[Path], typer.Option("--db", help="SQLite DB útvonala (alap: FELVI_DB env)")
+    ] = None,
+) -> None:
+    """Kiértékeli az összes dinamikus érem-feltételt és kiosztja a teljesített érmeket.
+
+    Hasznos ha az alkalmazás nem osztotta ki automatikusan a megszerzett érmeket.
+    """
+    from felvi_games.achievements import check_new_medals
+    from felvi_games.config import get_db_path
+    from felvi_games.db import FeladatRepository
+
+    db_path = db or get_db_path()
+    if not db_path.exists():
+        typer.echo(f"[!] DB nem található: {db_path}")
+        raise typer.Exit(code=1)
+
+    repo = FeladatRepository(db_path)
+    typer.echo(f"\n=== Érem-feltételek ellenőrzése: {user}  (DB: {db_path}) ===\n")
+
+    earned = check_new_medals(user, None, repo)
+
+    if earned:
+        typer.echo(f"  ✅ Kiosztott érmek ({len(earned)} db):")
+        for erem in earned:
+            typer.echo(f"    • {erem.ikon}  {erem.nev}  [{erem.kategoria}]")
+    else:
+        typer.echo("  Nincs új teljesített érem.")
+    typer.echo("")
+
+
+# ---------------------------------------------------------------------------
+# felvi reeval  – GPT-alapú újraértékelés parancssori eszköz
+# ---------------------------------------------------------------------------
+
+@app.command("reeval")
+def reeval_cmd(
+    db: Annotated[
+        Optional[Path], typer.Option("--db", help="SQLite DB útvonala (alap: FELVI_DB env)")
+    ] = None,
+    user: Annotated[
+        Optional[str], typer.Option("--user", help="Szűrés egy felhasználóra")
+    ] = None,
+    feladat_id: Annotated[
+        Optional[str], typer.Option("--feladat-id", help="Szűrés egy feladatra")
+    ] = None,
+    megoldas_id: Annotated[
+        Optional[int], typer.Option("--id", help="Egy konkrét megoldás újraértékelése ID alapján")
+    ] = None,
+    pending: Annotated[
+        bool, typer.Option("--pending", help="Csak függő jutalom-feldolgozást futtasson (nem küld GPT-nek)")
+    ] = False,
+    list_cmd: Annotated[
+        bool, typer.Option("--list", help="Listázza az újraértékelhető (nyílt válasz) megoldásokat")
+    ] = False,
+    limit: Annotated[
+        int, typer.Option("--limit", help="Maximum feldolgozandó megoldások száma")
+    ] = 10,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Csak kiírja mit csinálna, nem ment")
+    ] = False,
+) -> None:
+    """GPT-alapú újraértékelés: nyílt válaszok pontszámának felülvizsgálata.
+
+    Alap: listázza az újraértékelhető megoldásokat (--list).
+    --pending: feldolgozza a függőben lévő jutalmakat (nem kér GPT-t).
+    --id N: egy megoldást értékel újra GPT-vel.
+    --user / --feladat-id: tömeges újraértékelés (--limit darabot).
+    """
+    import json as _json
+
+    from felvi_games.ai import check_answer
+    from felvi_games.config import get_db_path
+    from felvi_games.db import FeladatRecord, FeladatRepository, MegoldasRecord
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+
+    db_path = db or get_db_path()
+    if not db_path.exists():
+        typer.echo(f"[!] DB nem található: {db_path}")
+        raise typer.Exit(code=1)
+
+    repo = FeladatRepository(db_path)
+
+    # --pending: process deferred rewards only, no GPT calls
+    if pending:
+        if not user:
+            typer.echo("[!] --pending használatához add meg a --user opciót.")
+            raise typer.Exit(code=2)
+        earned = repo.process_pending_ujraertekeles_jutalom(user, trigger_tipus="cli_reeval")
+        if earned:
+            typer.echo(f"✅ Jutalmak kiosztva ({user}): {', '.join(earned)}")
+        else:
+            typer.echo(f"  Nincs függő jutalom ({user}).")
+        return
+
+    # Query candidate rows
+    with Session(repo._engine) as s:
+        stmt = (
+            select(
+                MegoldasRecord.id,
+                MegoldasRecord.felhasznalo_nev,
+                MegoldasRecord.feladat_id,
+                MegoldasRecord.adott_valasz,
+                MegoldasRecord.pont,
+                MegoldasRecord.helyes,
+                MegoldasRecord.ujraertekelt,
+                MegoldasRecord.created_at,
+            )
+            .where(MegoldasRecord.adott_valasz.is_not(None))
+        )
+        if megoldas_id is not None:
+            stmt = stmt.where(MegoldasRecord.id == megoldas_id)
+        else:
+            if user:
+                stmt = stmt.where(MegoldasRecord.felhasznalo_nev == user)
+            if feladat_id:
+                stmt = stmt.where(MegoldasRecord.feladat_id == feladat_id)
+            # For bulk: prefer not-yet-reevaluated, open-answer tasks
+            from felvi_games.db import FeladatRecord as FR
+            open_ids = set(s.scalars(
+                select(FR.id).where(FR.feladat_tipus == "nyilt_valasz")
+            ).all())
+            if not feladat_id:
+                stmt = stmt.where(MegoldasRecord.feladat_id.in_(open_ids))
+            stmt = stmt.order_by(MegoldasRecord.ujraertekelt.asc(), MegoldasRecord.created_at.desc())
+            stmt = stmt.limit(limit)
+
+        rows = s.execute(stmt).all()
+
+    if not rows:
+        typer.echo("  Nincs újraértékelhető megoldás a feltételek alapján.")
+        return
+
+    # --list mode
+    if list_cmd or (megoldas_id is None and not user and not feladat_id):
+        typer.echo(f"\n=== Újraértékelhető megoldások  (DB: {db_path})  összesen: {len(rows)} ===\n")
+        for r in rows:
+            flag = "✓" if r.ujraertekelt else " "
+            eredmeny = "✅" if r.helyes else "❌"
+            typer.echo(
+                f"  [{flag}] id={r.id:5d}  {eredmeny} {r.pont}pt  "
+                f"{r.feladat_id}  {r.felhasznalo_nev}  "
+                f"  válasz: {str(r.adott_valasz or '')[:60]}"
+            )
+        typer.echo(f"\nTipp: felvi reeval --id <ID>   egy konkrét újraértékeléshez")
+        typer.echo(      f"      felvi reeval --user <NÉV>  tömeges újraértékeléshez\n")
+        return
+
+    # Reevaluate rows with GPT
+    total = len(rows)
+    improved = skipped = errors = 0
+
+    typer.echo(f"\n=== GPT újraértékelés  (DB: {db_path})  {'DRY-RUN  ' if dry_run else ''}{total} megoldás ===\n")
+
+    with Session(repo._engine) as s:
+        for r in rows:
+            f = s.get(FeladatRecord, r.feladat_id)
+            if not f:
+                typer.echo(f"  [!] Feladat nem található: {r.feladat_id} — kihagyva")
+                skipped += 1
+                continue
+
+            elfogadott = None
+            if f.elfogadott_valaszok:
+                try:
+                    elfogadott = _json.loads(f.elfogadott_valaszok)
+                except Exception:
+                    pass
+
+            try:
+                ert = check_answer(
+                    f.kerdes,
+                    f.helyes_valasz,
+                    r.adott_valasz or "",
+                    f.magyarazat,
+                    elfogadott_valaszok=elfogadott,
+                    feladat_tipus=f.feladat_tipus,
+                    max_pont=f.max_pont,
+                    reszpontozas=f.reszpontozas,
+                )
+            except Exception as exc:  # noqa: BLE001
+                typer.echo(f"  [!] GPT hiba  id={r.id}: {exc}")
+                errors += 1
+                continue
+
+            arrow = f"{r.pont} → {ert.pont}" if ert.pont != r.pont else f"{r.pont} (változatlan)"
+            flag = "📈" if ert.pont > r.pont else ("📉" if ert.pont < r.pont else "➡️ ")
+            typer.echo(
+                f"  {flag} id={r.id:5d}  {r.feladat_id}  {r.felhasznalo_nev}  "
+                f"pont: {arrow} / {f.max_pont}   {ert.visszajelzes[:60]}"
+            )
+
+            if not dry_run:
+                rv = repo.reevaluate_megoldas(
+                    r.id,
+                    ertekeles=ert,
+                    source="cli_reeval",
+                    note="Tömeges CLI újraértékelés",
+                )
+                if rv["new_pont"] > rv["old_pont"]:
+                    improved += 1
+                    if rv["deferred_reward"]:
+                        typer.echo(f"          ⭐ Jutalom függőben ({r.felhasznalo_nev})")
+
+    if not dry_run:
+        typer.echo(f"\n  Mentve: {total - skipped - errors} db, javult: {improved}, hiba: {errors}\n")
+        # Auto-process pending rewards for targeted user
+        if user:
+            earned = repo.process_pending_ujraertekeles_jutalom(user, trigger_tipus="cli_reeval")
+            if earned:
+                typer.echo(f"  ✅ Jutalmak kiosztva: {', '.join(earned)}\n")
+    else:
+        typer.echo(f"\n  (Dry-run, semmi nem lett mentve.)\n")
+
+
+# ---------------------------------------------------------------------------
 # felvi user-stats
 # ---------------------------------------------------------------------------
 

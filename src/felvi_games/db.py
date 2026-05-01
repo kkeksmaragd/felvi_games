@@ -310,6 +310,10 @@ class EremRecord(Base):
                 condition = _json.loads(self.condition_json)
             except Exception:
                 condition = None
+        created_at = self.created_at
+        if created_at is not None and created_at.tzinfo is None:
+            from datetime import timezone as _tz
+            created_at = created_at.replace(tzinfo=_tz.utc)
         return Erem(
             id=self.id,
             nev=self.nev,
@@ -325,6 +329,7 @@ class EremRecord(Base):
             privat=self.privat,
             cel_felhasznalo=self.cel_felhasznalo,
             condition=condition,
+            condition_valid_from=created_at if condition else None,
         )
 
 
