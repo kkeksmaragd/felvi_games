@@ -8,18 +8,33 @@ It is intended as a companion to the living progress report (progress_report.md)
 
 ## Design Principles
 
-The project is guided by a small set of core engineering principles:
+The project is guided by a small set of core engineering principles, starting with the most fundamentals:
 
 - **High cohesion** — each module has one responsibility.
 - **Low coupling** — modules communicate via well-defined interfaces; no circular dependencies.
 - **Composition over inheritance** — prefer small, reusable components.
-- **YAGNI** — implement only what is needed for the next incremental delivery.
-- **KISS** — keep solutions simple and readable.
 - **DRY** — avoid duplication; generalize patterns into cohesive modules.
+- **KISS** — keep solutions simple; use the right level of complexity to keep overall system understandable and maintainable.
+- **YAGNI** — plan with full architecture in mind, but implement only what is needed for the next incremental delivery.
 - **Spike-before-scale** — validate ideas with lightweight spikes before investing in full implementations.
 - **Performance focus** — LLM calls, video rendering, and TTS are slow; optimize for predictability and repeatability.
 
 ---
+
+## Test Development & TDD Rules
+- **Workflow**: Follow a strict Red-Green-Refactor cycle.
+    1. **Red**: Write a failing test in `tests/` that defines the new CLI command's behavior.
+    2. **Green**: Implement the minimal code in the main CLI tool to make the test pass.
+    3. **Refactor**: Clean up the implementation while ensuring the test stays green.
+- **CLI-First Testing**: Tests must invoke the application via its CLI interface using `subprocess` or `pytest` CLI runners to ensure end-to-end reliability.
+- **Mocking**: Use `unittest.mock` for external dependencies (APIs, Databases). Do not run real side-effects during unit tests.
+- **Execution (pwsh)**: Always run tests using the project's test command through the active terminal:
+  ```powershell
+  python main.py test  # Or directly: pytest --verbose
+  ```
+- **Coverage**: Aim for "Happy Path" verification first, then add edge cases for empty inputs or invalid CLI arguments.
+
+--
 
 ## Development Cycle
 
@@ -50,6 +65,7 @@ The project follows an iterative, research-driven cycle with heavy documentation
 - Update progress_report.md regularly.
 - Capture completed work in docs/development_history.md.
 - Keep README and docs up to date.
+- Maintain a clear backlog of next steps, technical debt, and future ideas.
 
 ### 6) Repository Management
 - Organize code into clear modules and packages.

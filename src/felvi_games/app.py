@@ -403,14 +403,12 @@ def _render_csoport_context(feladat: Feladat) -> None:
 
 
 def _render_valasz_input(feladat: Feladat, gs: GameState) -> str:
-    """Smart answer input widget based on feladat_tipus.
-
-    - igaz_hamis → Igaz / Hamis radio
-    - tobbvalasztos (with options) → radio from valaszlehetosegek
-    - everything else → speech + text input
-    """
+    """Answer input: radio pre-fills the text box, user can always edit freely."""
     tipus = feladat.feladat_tipus
+    ta_key = f"ta_{feladat.id}"
 
+    # Radio for igaz/hamis and többválasztós – selection writes directly into the
+    # text_area's session_state key so the widget reflects it on the same render pass.
     if tipus == "igaz_hamis":
         sel = st.radio(
             "Válaszod:",
@@ -419,33 +417,37 @@ def _render_valasz_input(feladat: Feladat, gs: GameState) -> str:
             horizontal=True,
             key=f"vh_{feladat.id}",
         )
-        return sel.lower() if sel else ""
+        if sel:
+            st.session_state[ta_key] = sel
 
-    if tipus == "tobbvalasztos" and feladat.valaszlehetosegek:
+    elif tipus == "tobbvalasztos" and feladat.valaszlehetosegek:
         sel = st.radio(
             "Válaszd ki a helyes választ:",
             options=feladat.valaszlehetosegek,
             index=None,
             key=f"tv_{feladat.id}",
         )
-        return sel or ""
+        if sel:
+            st.session_state[ta_key] = sel
 
-    # Generic open-answer: speech + text
-    audio_input = st.audio_input("🎤 Kattints és mondj egy választ")
-    if audio_input:
-        audio_hash = hash(audio_input.getvalue())
-        if st.session_state.get("_stt_hash") != audio_hash:
-            st.session_state["_stt_hash"] = audio_hash
-            with st.spinner("Átírás (Whisper)..."):
-                gs.atiras = speech_to_text(audio_input.getvalue())
+    else:
+        # Generic open-answer: speech input
+        audio_input = st.audio_input("🎤 Kattints és mondj egy választ")
+        if audio_input:
+            audio_hash = hash(audio_input.getvalue())
+            if st.session_state.get("_stt_hash") != audio_hash:
+                st.session_state["_stt_hash"] = audio_hash
+                with st.spinner("Átírás (Whisper)..."):
+                    gs.atiras = speech_to_text(audio_input.getvalue())
+                st.session_state[ta_key] = gs.atiras
 
     szoveges = st.text_area(
-        "✍️ Vagy írj ide:",
-        value=gs.atiras,
+        "✍️ Válasz:",
         placeholder="pl. 32",
-        height=120,
+        height=80,
+        key=ta_key,
     )
-    return (szoveges or gs.atiras).strip()
+    return szoveges.strip()
 
 
 def _render_kerdes(gs: GameState) -> None:
