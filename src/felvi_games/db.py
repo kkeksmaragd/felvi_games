@@ -1028,6 +1028,93 @@ class FeladatRepository:
             session.commit()
             return True
 
+    def get_wrong_feladatok(
+        self,
+        *,
+        felhasznalo_nev: str | None = None,
+        targy: str | None = None,
+        szint: str | None = None,
+        min_hibas: int = 1,
+        limit: int = 0,
+        include_wrong_answers: bool = False,
+    ) -> list["WrongFeladatRow"]:
+        """Return tasks that received at least *min_hibas* wrong answers.
+
+        Results are ordered by wrong-answer count descending.
+        When *include_wrong_answers* is True each row's ``hibas_valaszok`` list
+        is populated with the actual submitted wrong answers.
+        """
+        from collections import Counter
+
+        from sqlalchemy import case, func, select
+
+        wrong_count = func.sum(
+            case((MegoldasRecord.helyes.is_(False), 1), else_=0)
+        ).label("hibas")
+        total_count = func.count(MegoldasRecord.id).label("osszes")
+
+        stmt = (
+            select(
+                FeladatRecord.id,
+                FeladatRecord.targy,
+                FeladatRecord.szint,
+                FeladatRecord.ev,
+                FeladatRecord.feladat_tipus,
+                FeladatRecord.kerdes,
+                FeladatRecord.helyes_valasz,
+                wrong_count,
+                total_count,
+            )
+            .join(MegoldasRecord, MegoldasRecord.feladat_id == FeladatRecord.id)
+            .where(MegoldasRecord.helyes.is_(False))
+            .group_by(FeladatRecord.id)
+            .having(wrong_count >= min_hibas)
+            .order_by(wrong_count.desc(), total_count.desc())
+        )
+        if felhasznalo_nev:
+            stmt = stmt.where(MegoldasRecord.felhasznalo_nev == felhasznalo_nev)
+        if targy:
+            stmt = stmt.where(FeladatRecord.targy == targy)
+        if szint:
+            stmt = stmt.where(FeladatRecord.szint == szint)
+        if limit > 0:
+            stmt = stmt.limit(limit)
+
+        with Session(self._engine) as sess:
+            rows = sess.execute(stmt).all()
+
+            wrong_answers: dict[str, list[str]] = {}
+            if include_wrong_answers and rows:
+                fids = [r.id for r in rows]
+                wa_stmt = (
+                    select(MegoldasRecord.feladat_id, MegoldasRecord.adott_valasz)
+                    .where(
+                        MegoldasRecord.feladat_id.in_(fids),
+                        MegoldasRecord.helyes.is_(False),
+                    )
+                    .order_by(MegoldasRecord.feladat_id, MegoldasRecord.adott_valasz)
+                )
+                if felhasznalo_nev:
+                    wa_stmt = wa_stmt.where(MegoldasRecord.felhasznalo_nev == felhasznalo_nev)
+                for wa in sess.execute(wa_stmt).all():
+                    wrong_answers.setdefault(wa.feladat_id, []).append(wa.adott_valasz)
+
+        return [
+            WrongFeladatRow(
+                feladat_id=r.id,
+                targy=r.targy,
+                szint=r.szint,
+                ev=r.ev,
+                feladat_tipus=r.feladat_tipus,
+                kerdes=r.kerdes or "",
+                helyes_valasz=r.helyes_valasz or "",
+                hibas_db=int(r.hibas or 0),
+                osszes_db=int(r.osszes or 0),
+                hibas_valaszok=wrong_answers.get(r.id, []),
+            )
+            for r in rows
+        ]
+
     def get_user_stats(self, user_nev: str) -> "UserStats | None":
         """Return aggregated statistics for *user_nev*, or None if unknown."""
         from sqlalchemy import case, func, select
@@ -1097,6 +1184,28 @@ class FeladatRepository:
             jateknapok=[(r.nap, int(r.n)) for r in nap_rows],
             eremek=eremek,
         )
+
+
+# ---------------------------------------------------------------------------
+# WrongFeladatRow dataclass (returned by FeladatRepository.get_wrong_feladatok)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class WrongFeladatRow:
+    feladat_id: str
+    targy: str
+    szint: str
+    ev: int | None
+    feladat_tipus: str | None
+    kerdes: str
+    helyes_valasz: str
+    hibas_db: int
+    osszes_db: int
+    hibas_valaszok: list[str] = field(default_factory=list)
+
+    @property
+    def rontas_pct(self) -> float:
+        return (100.0 * self.hibas_db / self.osszes_db) if self.osszes_db else 0.0
 
 
 # ---------------------------------------------------------------------------

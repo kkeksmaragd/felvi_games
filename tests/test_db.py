@@ -543,3 +543,103 @@ class TestNewFeladatFields:
         assert r.valaszlehetosegek is None
         assert r.reszpontozas is None
         assert r.ertekeles_megjegyzes is None
+
+
+# ---------------------------------------------------------------------------
+# get_wrong_feladatok
+# ---------------------------------------------------------------------------
+
+
+class TestGetWrongFeladatok:
+    def _save(self, repo, feladat, valasz: str, helyes: bool) -> None:
+        repo.save_megoldas(feladat, valasz, Ertekeles(helyes, "ok" if helyes else "nem", 1 if helyes else 0))
+
+    def test_empty_returns_empty(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        assert repo.get_wrong_feladatok() == []
+
+    def test_only_correct_answers_not_returned(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        self._save(repo, feladat_matek, "42", True)
+        assert repo.get_wrong_feladatok() == []
+
+    def test_wrong_answer_appears(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        self._save(repo, feladat_matek, "99", False)
+        rows = repo.get_wrong_feladatok()
+        assert len(rows) == 1
+        assert rows[0].feladat_id == feladat_matek.id
+        assert rows[0].hibas_db == 1
+        assert rows[0].osszes_db == 1
+
+    def test_rontas_pct_correct(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        self._save(repo, feladat_matek, "42", True)
+        self._save(repo, feladat_matek, "99", False)
+        rows = repo.get_wrong_feladatok()
+        assert rows[0].osszes_db == 1   # only the wrong attempt is joined
+        assert rows[0].rontas_pct == 100.0
+
+    def test_ordered_by_hibas_desc(self, repo):
+        f1 = _make_feladat("m01")
+        f2 = _make_feladat("m02")
+        repo.upsert_many([f1, f2])
+        self._save(repo, f1, "bad", False)
+        self._save(repo, f2, "bad", False)
+        self._save(repo, f2, "worse", False)
+        rows = repo.get_wrong_feladatok()
+        assert rows[0].feladat_id == "m02"   # 2 wrong answers → first
+        assert rows[1].feladat_id == "m01"
+
+    def test_min_hibas_filter(self, repo):
+        f1 = _make_feladat("m01")
+        f2 = _make_feladat("m02")
+        repo.upsert_many([f1, f2])
+        self._save(repo, f1, "bad", False)
+        self._save(repo, f2, "bad", False)
+        self._save(repo, f2, "worse", False)
+        rows = repo.get_wrong_feladatok(min_hibas=2)
+        assert len(rows) == 1
+        assert rows[0].feladat_id == "m02"
+
+    def test_targy_filter(self, repo, feladat_matek, feladat_magyar):
+        repo.upsert(feladat_matek)
+        repo.upsert(feladat_magyar)
+        self._save(repo, feladat_matek, "0", False)
+        self._save(repo, feladat_magyar, "valami", False)
+        rows = repo.get_wrong_feladatok(targy="matek")
+        assert all(r.targy == "matek" for r in rows)
+        assert len(rows) == 1
+
+    def test_user_filter(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        repo.save_megoldas(feladat_matek, "bad", Ertekeles(False, "nem", 0), felhasznalo_nev="Alice")
+        repo.save_megoldas(feladat_matek, "bad", Ertekeles(False, "nem", 0), felhasznalo_nev="Bob")
+        alice_rows = repo.get_wrong_feladatok(felhasznalo_nev="Alice")
+        bob_rows = repo.get_wrong_feladatok(felhasznalo_nev="Bob")
+        assert len(alice_rows) == 1
+        assert len(bob_rows) == 1
+        # Both see same feladat, but counts are per-user
+        assert alice_rows[0].hibas_db == 1
+        assert bob_rows[0].hibas_db == 1
+
+    def test_limit(self, repo):
+        feladatok = [_make_feladat(f"m{i:02}") for i in range(5)]
+        repo.upsert_many(feladatok)
+        for f in feladatok:
+            self._save(repo, f, "bad", False)
+        rows = repo.get_wrong_feladatok(limit=3)
+        assert len(rows) == 3
+
+    def test_include_wrong_answers(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        self._save(repo, feladat_matek, "wrong1", False)
+        self._save(repo, feladat_matek, "wrong2", False)
+        rows = repo.get_wrong_feladatok(include_wrong_answers=True)
+        assert sorted(rows[0].hibas_valaszok) == ["wrong1", "wrong2"]
+
+    def test_without_include_wrong_answers_list_is_empty(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        self._save(repo, feladat_matek, "bad", False)
+        rows = repo.get_wrong_feladatok(include_wrong_answers=False)
+        assert rows[0].hibas_valaszok == []

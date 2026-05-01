@@ -640,6 +640,87 @@ def stats_cmd(
 
 
 # ---------------------------------------------------------------------------
+# felvi wrong  – hibásan megoldott feladatok listája
+# ---------------------------------------------------------------------------
+
+@app.command("wrong")
+def wrong_cmd(
+    db: Annotated[
+        Optional[Path], typer.Option("--db", help="SQLite DB útvonala (alap: FELVI_DB env)")
+    ] = None,
+    user: Annotated[
+        Optional[str], typer.Option("--user", help="Szűrés egy felhasználóra")
+    ] = None,
+    targy: Annotated[
+        Optional[Targy], typer.Option("--targy", help="Tantárgy szűrő")
+    ] = None,
+    szint: Annotated[
+        Optional[EvfolyamKulcs], typer.Option("--szint", help="Évfolyam szűrő (4/6/8)")
+    ] = None,
+    min_hibas: Annotated[
+        int, typer.Option("--min-hibas", help="Csak legalább ennyi hibás kísérlettel rendelkező feladatok")
+    ] = 1,
+    limit: Annotated[
+        int, typer.Option("--limit", help="Max. kilistázott feladatok száma (0 = mind)")
+    ] = 20,
+    detail: Annotated[
+        bool, typer.Option("--detail", help="A ténylegesen beírt hibás válaszok is jelenjenek meg")
+    ] = False,
+) -> None:
+    """Feladatok, amelyekre legalább egy hibás választ adtak (legtöbbet rontottak elöl)."""
+    from collections import Counter
+
+    from felvi_games.config import get_db_path
+    from felvi_games.db import FeladatRepository
+
+    db_path = db or get_db_path()
+    if not db_path.exists():
+        typer.echo(f"[!] DB nem található: {db_path}")
+        raise typer.Exit(code=1)
+
+    repo = FeladatRepository(db_path)
+    rows = repo.get_wrong_feladatok(
+        felhasznalo_nev=user,
+        targy=targy.value if targy else None,
+        szint=szint.value if szint else None,
+        min_hibas=min_hibas,
+        limit=limit,
+        include_wrong_answers=detail,
+    )
+
+    scope = f"  (user={user})" if user else ""
+    typer.echo(f"\n=== Hibásan megoldott feladatok  (DB: {db_path}){scope} ===\n")
+
+    if not rows:
+        typer.echo("  Nincs találat (még senki sem rontott el egy feladatot sem ebben a körben).")
+        typer.echo()
+        return
+
+    for r in rows:
+        ev_label = str(r.ev) if r.ev else "?"
+        tipus = r.feladat_tipus or "-"
+        kerdes_short = (r.kerdes[:90] + "…") if len(r.kerdes) > 90 else r.kerdes
+        helyes_short = (r.helyes_valasz[:50] + "…") if len(r.helyes_valasz) > 50 else r.helyes_valasz
+
+        typer.echo(
+            f"  [{r.targy}/{r.szint}/{ev_label}] {tipus}  "
+            f"hibás: {r.hibas_db}/{r.osszes_db}  ({r.rontas_pct:.0f}% rontás)"
+        )
+        typer.echo(f"    Kérdés:        {kerdes_short}")
+        typer.echo(f"    Helyes válasz: {helyes_short}")
+        typer.echo(f"    ID:            {r.feladat_id}")
+
+        if detail and r.hibas_valaszok:
+            cnt = Counter(r.hibas_valaszok)
+            parts = [f'"{v}"×{c}' if c > 1 else f'"{v}"' for v, c in cnt.most_common()]
+            typer.echo(f"    Hibás válaszok: {', '.join(parts)}")
+
+        typer.echo()
+
+    typer.echo(f"  Összesen: {len(rows)} feladat listázva.\n")
+
+
+# ---------------------------------------------------------------------------
 # felvi user-stats
 # ---------------------------------------------------------------------------
 
