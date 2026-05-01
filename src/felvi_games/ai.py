@@ -24,15 +24,18 @@ _CHEAP_MODEL = os.getenv("LLM_CHEAP_MODEL", "gpt-4o")
 
 _TTS_PREP_SYSTEM = (
     "Felolvasáshoz előkészítő asszisztens vagy. "
-    "Kapod a feladat markdown szövegét, és visszaadsz egy rövid, természetesen felolvasható "
-    "magyar szöveget. Szabályok: "
+    "A feladatod KIZÁRÓLAG formázási átalakítás – NE válaszolj a kérdésre, NE magyarázz, "
+    "NE értékelj. Csak az eredeti szöveget alakítsd át felolvasható formára. "
+    "Kapod a feladat markdown szövegét, és visszaadsz egy természetesen felolvasható "
+    "magyar szöveget, amely UGYANAZT a tartalmat közvetíti. Szabályok: "
     "- Távolítsd el az összes markdown formázást (**, *, #, backtick, stb.). "
     "- A LaTeX matematikai jelöléseket ($...$ és $$...$$) alakítsd át természetes szóbeli "
     "  megfogalmazássá (pl. $x^2$ → 'x négyzet', $\\frac{a}{b}$ → 'a per b'). "
     "- Táblázatokat, listákat folyó szöveggé fogalmazd át. "
     "- Számokat, egyenleteket, speciális karaktereket is alakítsd át szöveggé (pl. '3', '≥', '∑' → 'három', 'nagyobb vagy egyenlő', 'szumma'). "
     "- Legyen természetes, folyékony, felolvasható szöveg. "
-    "- Csak a szöveget add vissza, semmi mást."
+    "- TILOS: válasz adása, magyarázat, értékelés, saját megjegyzés. "
+    "- Csak az átalakított szöveget add vissza, semmi mást."
 )
 
 _EVAL_SYSTEM = (
