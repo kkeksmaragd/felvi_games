@@ -14,7 +14,9 @@ A feladatsorokat az [oktatas.hu](https://www.oktatas.hu)-ról tölti le, GPT-vel
 - **Azonnali értékelés** — GPT összehasonlítja a választ az elfogadott megoldásokkal
 - **TTS / STT** — OpenAI Whisper + TTS hangos kérdések és válaszok
 - **Menet követés** — pontszám, streak, megoldott feladatok, időmérés
-- **CLI eszközök** — letöltés, feldolgozás, állapotellenőrzés egy parancsból
+- **AI review + verziókövetés** — feladatok javítása GPT-vel, változáskor automatikus verziókezelés
+- **Érem / achievement rendszer** — szabályalapú és manuálisan kiosztható érmek
+- **CLI eszközök** — letöltés, feldolgozás, állapotellenőrzés, review, statisztika egy parancsból
 
 ---
 
@@ -43,6 +45,9 @@ pip install -e ".[dev]"
 # 4. Környezeti változók beállítása
 cp .env.example .env
 # Szerkeszd a .env fájlt (lásd alább)
+
+# 5. DB séma létrehozása / migrálása
+alembic upgrade head
 ```
 
 ### `.env` konfiguráció
@@ -62,7 +67,29 @@ FELVI_ASSETS=W:/Users/Felvi/assets
 
 # GPT modell (opcionális, alap: gpt-4o)
 LLM_MODEL=gpt-4o
+
+# Olcsóbb GPT modell TTS-szöveg előkészítéshez (opcionális, alap: gpt-4o-mini)
+LLM_CHEAP_MODEL=gpt-4o-mini
 ```
+
+---
+
+## Adatbázis migrációk
+
+A séma Alembic-kel verziózott. Minden környezetváltás vagy friss checkout után futtasd:
+
+```bash
+# Jelenlegi revízió ellenőrzése
+alembic current
+
+# Séma frissítése a legújabb verzióra
+alembic upgrade head
+
+# Visszalépés egy verzióval (ha szükséges)
+alembic downgrade -1
+```
+
+A migrációs fájlok a `migrations/versions/` mappában találhatók. Az `env.py` automatikusan az alkalmazás DB-útvonalát (`FELVI_DB`) használja.
 
 ---
 
@@ -119,6 +146,97 @@ felvi parse --szint 4 --year 2023 --review
 felvi parse --dry-run
 ```
 
+### `felvi review` — AI review futtatása feladatokon
+
+Az AI review észleli a tartalmi hibákat és javítja a feladatot. Ha a tartalom megváltozott, a régi rekord archiválódik és új verzió jön létre (pl. `mat4_2023_1_5_a` → `mat4_2023_1_5_a_v2`).
+
+```bash
+# Egy konkrét feladat reviewja
+felvi review mat4_2023_1_5_a
+
+# Megjegyzéssel (az AI figyelembe veszi)
+felvi review mat4_2023_1_5_a --megjegyzes "Az elfogadott válaszok között legyen a '30 fok' alak is"
+
+# Top-5 legtöbbet rontott feladat reviewja
+felvi review --wrong
+
+# Top-3, előnézet (nem ment DB-be)
+felvi review --wrong --limit 3 --dry-run
+
+# Más modellel
+felvi review --wrong --limit 5 --model gpt-4o
+```
+
+**Versioning logika:**
+- Tartalom nem változott → in-place frissítés (`review_elvegezve = True`)
+- Tartalom változott → régi rekord `statusz = archivalt`, új rekord `verzio = N+1`, `elozmeny_feladat_id` visszamutat az előzményre
+
+### `felvi wrong` — Hibásan megoldott feladatok
+
+```bash
+# Top-20 legtöbbet rontott feladat
+felvi wrong
+
+# Szűrés tárgyra / évfolyamra
+felvi wrong --targy matek --szint 4
+
+# Csak legalább 3 hibás kísérlettel rendelkezők
+felvi wrong --min-hibas 3
+
+# Hibás válaszok részletezése
+felvi wrong --detail
+
+# Egy felhasználó adatai
+felvi wrong --user "Lackó"
+```
+
+### `felvi stats` — Összefoglaló statisztika
+
+```bash
+felvi stats             # feladatok és megoldások összefoglalója
+felvi stats --db path/to/other.db
+```
+
+### `felvi usage` — Felhasználói aktivitás
+
+```bash
+felvi usage             # összes felhasználó
+felvi usage --user "Lackó"
+felvi usage --limit 10  # utolsó 10 menet / felhasználó
+```
+
+### `felvi user-stats` — Részletes felhasználói riport
+
+```bash
+felvi user-stats Lackó
+felvi user-stats Lackó --simulate   # éremszabályok szimulációja is
+```
+
+### `felvi medals` — Érmek
+
+```bash
+felvi medals --list                     # katalógus
+felvi medals --user "Lackó"             # megszerzett érmek
+felvi medals --user "Lackó" --expired   # lejárt érmek is
+```
+
+### `felvi medal-add` / `medal-edit` / `medal-grant` / `medal-delete`
+
+```bash
+# Új érem hozzáadása
+felvi medal-add --id kivalosag_2026 --nev "Kiválóság 2026" \
+    --leiras "5 menetből 5 tökéletes" --ikon "🏆" --kategoria teljesitmeny
+
+# Érem szerkesztése
+felvi medal-edit --id kivalosag_2026 --leiras "Frissített leírás"
+
+# Érem manuális odaítélése
+felvi medal-grant --id kivalosag_2026 --felhasznalo "Lackó"
+
+# Érem törlése
+felvi medal-delete --id kivalosag_2026
+```
+
 ---
 
 ## Fájlnév konvenció
@@ -173,15 +291,20 @@ pytest tests/ -q -k "not (test_matek_prefix or test_magyar_prefix or test_4oszta
 felvi_games/
 ├── src/felvi_games/
 │   ├── app.py          # Streamlit UI
-│   ├── cli.py          # CLI belépési pont (felvi scrape/parse/info)
+│   ├── cli.py          # CLI belépési pont (felvi scrape/parse/info/review/…)
 │   ├── scraper.py      # PDF letöltés oktatas.hu-ról
 │   ├── pdf_parser.py   # PDF → TaskBlock → GPT → Feladat pipeline
 │   ├── status.py       # Konfig / PDF / DB állapotellenőrzés
-│   ├── ai.py           # GPT értékelés (check_answer)
-│   ├── db.py           # SQLAlchemy adatbázis réteg
-│   ├── models.py       # Feladat, FeladatCsoport, GameState adatmodellek
+│   ├── ai.py           # GPT értékelés, TTS szöveg-előkészítés
+│   ├── db.py           # SQLAlchemy ORM + FeladatRepository
+│   ├── models.py       # Feladat, GameState, Erem adatmodellek
 │   ├── config.py       # Env változók, útvonalak
-│   └── review.py       # CLI review eszköz
+│   ├── review.py       # AI review logika (review_feladat_ai)
+│   ├── achievements.py # Érem katalógus és szabályok
+│   └── medal_assets.py # Érem kép- és hang-asset generálás
+├── migrations/
+│   ├── env.py          # Alembic konfiguráció
+│   └── versions/       # Séma migrációk
 ├── tests/
 │   ├── test_db.py
 │   ├── test_pdf_parser.py
@@ -214,4 +337,25 @@ felvi info --szint 4
 
 # 5. App indítása
 streamlit run src/felvi_games/app.py
+```
+
+---
+
+## Tipikus review workflow
+
+```bash
+# Melyik feladatokat rontják el legtöbbet?
+felvi wrong --limit 10
+
+# Review futtatása előnézetben (nem ment)
+felvi review --wrong --limit 5 --dry-run
+
+# Éles review — automatikus verziókezeléssel
+felvi review --wrong --limit 5
+
+# Egy konkrét feladat javítása megjegyzéssel
+felvi review mat4_2023_1_5_a --megjegyzes "Az elfogadott válaszok bővítendők"
+
+# Ellenőrzés: megjelent-e az új verzió?
+felvi stats
 ```

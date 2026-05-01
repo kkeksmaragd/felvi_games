@@ -643,3 +643,98 @@ class TestGetWrongFeladatok:
         self._save(repo, feladat_matek, "bad", False)
         rows = repo.get_wrong_feladatok(include_wrong_answers=False)
         assert rows[0].hibas_valaszok == []
+
+
+# ---------------------------------------------------------------------------
+# save_review – versioning
+# ---------------------------------------------------------------------------
+
+
+import dataclasses
+
+
+class TestSaveReview:
+    """Tests for FeladatRepository.save_review() versioning logic."""
+
+    def _reviewed(self, feladat: "Feladat", **changes) -> "Feladat":
+        """Return a copy of feladat with review_elvegezve=True and optional field changes."""
+        return dataclasses.replace(feladat, review_elvegezve=True, **changes)
+
+    def test_no_content_change_returns_same_id(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        reviewed = self._reviewed(feladat_matek)
+        updated = repo.save_review(reviewed)
+        assert updated.id == feladat_matek.id
+
+    def test_no_content_change_sets_review_flag(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        reviewed = self._reviewed(feladat_matek)
+        repo.save_review(reviewed)
+        assert repo.get(feladat_matek.id).review_elvegezve is True
+
+    def test_no_content_change_record_stays_aktiv(self, repo, feladat_matek):
+        from felvi_games.models import FeladatStatusz
+        repo.upsert(feladat_matek)
+        repo.save_review(self._reviewed(feladat_matek))
+        assert repo.get(feladat_matek.id).statusz == FeladatStatusz.AKTIV
+
+    def test_content_change_creates_new_id(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        reviewed = self._reviewed(feladat_matek, kerdes="Módosított kérdés?")
+        updated = repo.save_review(reviewed)
+        assert updated.id != feladat_matek.id
+        assert updated.id == f"{feladat_matek.id}_v2"
+
+    def test_content_change_archives_old_record(self, repo, feladat_matek):
+        from felvi_games.models import FeladatStatusz
+        repo.upsert(feladat_matek)
+        repo.save_review(self._reviewed(feladat_matek, kerdes="Módosított kérdés?"))
+        old = repo.get(feladat_matek.id)
+        assert old.statusz == FeladatStatusz.ARCHIVALT
+
+    def test_content_change_new_record_is_aktiv(self, repo, feladat_matek):
+        from felvi_games.models import FeladatStatusz
+        repo.upsert(feladat_matek)
+        updated = repo.save_review(self._reviewed(feladat_matek, kerdes="Módosított kérdés?"))
+        assert repo.get(updated.id).statusz == FeladatStatusz.AKTIV
+
+    def test_content_change_sets_elozmeny_feladat_id(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        updated = repo.save_review(self._reviewed(feladat_matek, kerdes="Módosított kérdés?"))
+        assert updated.elozmeny_feladat_id == feladat_matek.id
+
+    def test_content_change_increments_verzio(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        updated = repo.save_review(self._reviewed(feladat_matek, kerdes="Módosított kérdés?"))
+        assert updated.verzio == 2
+
+    def test_second_version_creates_v3(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        v2 = repo.save_review(self._reviewed(feladat_matek, kerdes="v2 kérdés?"))
+        repo.upsert(v2)
+        v3 = repo.save_review(self._reviewed(v2, kerdes="v3 kérdés?"))
+        assert v3.id == f"{feladat_matek.id}_v3"
+        assert v3.verzio == 3
+
+    def test_elfogadott_valaszok_change_creates_new_version(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        reviewed = self._reviewed(feladat_matek, elfogadott_valaszok=["42", "42.0"])
+        updated = repo.save_review(reviewed)
+        assert updated.id == f"{feladat_matek.id}_v2"
+
+    def test_all_returns_only_aktiv_after_review(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        repo.save_review(self._reviewed(feladat_matek, kerdes="Módosított?"))
+        aktiv = repo.all(targy=feladat_matek.targy)
+        ids = [f.id for f in aktiv]
+        assert feladat_matek.id not in ids
+        assert f"{feladat_matek.id}_v2" in ids
+
+    def test_save_review_unknown_id_raises(self, repo, feladat_matek):
+        with pytest.raises(KeyError):
+            repo.save_review(self._reviewed(feladat_matek))
+
+    def test_megjegyzes_persisted(self, repo, feladat_matek):
+        repo.upsert(feladat_matek)
+        repo.save_review(self._reviewed(feladat_matek), megjegyzes="tesztnota")
+        assert repo.get(feladat_matek.id).review_megjegyzes == "tesztnota"

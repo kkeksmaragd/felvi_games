@@ -8,6 +8,7 @@ Belépési pont:
     felvi info     – Konfiguráció, PDF-ek és DB állapot kiírása
     felvi scrape   – PDF-ek letöltése
     felvi parse    – PDF-ek feldolgozása DB-be
+    felvi review   – AI review futtatása egy vagy több feladaton
 """
 from __future__ import annotations
 
@@ -813,6 +814,136 @@ def user_stats_cmd(
         typer.echo()
 
     typer.echo()
+
+
+# ---------------------------------------------------------------------------
+# felvi review  – AI review futtatása feladatokon
+# ---------------------------------------------------------------------------
+
+@app.command("review")
+def review_cmd(
+    feladat_id: Annotated[
+        Optional[str], typer.Argument(help="Feladat ID, amire review-t futtatunk")
+    ] = None,
+    db: Annotated[
+        Optional[Path], typer.Option("--db", help="SQLite DB útvonala (alap: FELVI_DB env)")
+    ] = None,
+    wrong: Annotated[
+        bool, typer.Option("--wrong", help="A legtöbbet rontott feladatokat veszi alapul")
+    ] = False,
+    limit: Annotated[
+        int, typer.Option("--limit", help="Max. feldolgozandó feladatok száma (--wrong esetén)")
+    ] = 5,
+    megjegyzes: Annotated[
+        Optional[str], typer.Option("--megjegyzes", help="Kézi megjegyzés az AI-nak")
+    ] = None,
+    model: Annotated[
+        Optional[str], typer.Option("--model", help="LLM modell neve (alap: LLM_MODEL env)")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Futtatja az AI review-t, de nem ment DB-be")
+    ] = False,
+) -> None:
+    """AI review futtatása egy vagy több feladaton.
+
+    Háromféleképpen hívható:
+
+    \b
+    felvi review M8_2023_1_3          # egy konkrét feladat
+    felvi review --wrong --limit 3    # top-3 legtöbbet rontott
+    felvi review --wrong              # top-5 (alap)
+    """
+    from felvi_games.config import get_db_path
+    from felvi_games.db import FeladatRepository
+    from felvi_games.review import review_feladat_ai
+
+    db_path = db or get_db_path()
+    if not db_path.exists():
+        typer.echo(f"[!] DB nem található: {db_path}")
+        raise typer.Exit(code=1)
+
+    repo = FeladatRepository(db_path)
+
+    # ---- Determine feladat list ----
+    feladatok_to_review: list = []
+
+    if feladat_id:
+        f = repo.get(feladat_id)
+        if f is None:
+            typer.echo(f"[!] Feladat nem található: {feladat_id}")
+            raise typer.Exit(code=1)
+        feladatok_to_review = [f]
+    elif wrong:
+        rows = repo.get_wrong_feladatok(limit=limit, min_hibas=1)
+        if not rows:
+            typer.echo("  Nincs hibásan megoldott feladat.")
+            return
+        ids = [r.feladat_id for r in rows]
+        feladatok_to_review = [f for fid in ids if (f := repo.get(fid)) is not None]
+    else:
+        typer.echo("[!] Adj meg egy feladat ID-t, vagy használd a --wrong flaget.")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"\n=== AI Review  ({len(feladatok_to_review)} feladat)  dry_run={dry_run} ===\n")
+
+    for feladat in feladatok_to_review:
+        typer.echo(f"  ▶ {feladat.id}  [{feladat.targy}/{feladat.szint}]")
+        kerdes_short = (feladat.kerdes[:80] + "…") if len(feladat.kerdes) > 80 else feladat.kerdes
+        typer.echo(f"    Kérdés:  {kerdes_short}")
+        typer.echo(f"    Helyes:  {feladat.helyes_valasz}")
+
+        # Load feladatlap source text for context
+        fl_text = ""
+        if feladat.fl_szoveg_path:
+            from felvi_games.config import resolve_asset
+            fl_path = resolve_asset(feladat.fl_szoveg_path)
+            if fl_path.exists():
+                fl_text = fl_path.read_text(encoding="utf-8")
+            else:
+                typer.echo(f"    [!] fl_szoveg_path nem található: {fl_path}")
+
+        typer.echo("    AI review fut…", nl=False)
+        try:
+            reviewed = review_feladat_ai(feladat, fl_text, megjegyzes, model=model)
+        except Exception as exc:
+            typer.echo(f" HIBA: {exc}")
+            continue
+        typer.echo(" kész.")
+
+        # Show diff
+        changed_fields = []
+        for field in ("kerdes", "helyes_valasz", "elfogadott_valaszok", "hint",
+                      "magyarazat", "neh", "feladat_tipus", "max_pont"):
+            old_val = getattr(feladat, field)
+            new_val = getattr(reviewed, field)
+            if old_val != new_val:
+                changed_fields.append(field)
+                old_s = str(old_val)[:60]
+                new_s = str(new_val)[:60]
+                typer.echo(f"    ~ {field}:")
+                typer.echo(f"        előtte: {old_s}")
+                typer.echo(f"        utána:  {new_s}")
+
+        if reviewed.review_megjegyzes:
+            typer.echo(f"    AI megjegyzés: {reviewed.review_megjegyzes}")
+
+        if not changed_fields:
+            typer.echo("    → Tartalom nem változott.")
+        else:
+            typer.echo(f"    → Változott mezők: {', '.join(changed_fields)}")
+
+        if dry_run:
+            typer.echo("    [dry-run] Nem mentve.")
+        else:
+            updated = repo.save_review(reviewed, megjegyzes)
+            if updated.id != feladat.id:
+                typer.echo(f"    ✓ Új verzió: {feladat.id}  →  {updated.id}  (archivált: {feladat.id})")
+            else:
+                typer.echo(f"    ✓ In-place frissítve: {updated.id}")
+
+        typer.echo()
+
+    typer.echo("Kész.\n")
 
 
 # ---------------------------------------------------------------------------
