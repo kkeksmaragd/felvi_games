@@ -817,6 +817,149 @@ def user_stats_cmd(
 
 
 # ---------------------------------------------------------------------------
+# felvi medal-clear  – összes kiosztott érem törlése
+# ---------------------------------------------------------------------------
+
+@app.command("medal-clear")
+def medal_clear_cmd(
+    db: Annotated[
+        Optional[Path], typer.Option("--db", help="SQLite DB útvonala (alap: FELVI_DB env)")
+    ] = None,
+    user: Annotated[
+        Optional[str], typer.Option("--user", help="Csak egy felhasználó érmeinek törlése")
+    ] = None,
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Megerősítés kérése nélkül töröl")
+    ] = False,
+) -> None:
+    """Kiosztott érmek törlése a DB-ből.
+
+    \b
+    felvi medal-clear               # minden felhasználó érme
+    felvi medal-clear --user Lóri   # csak Lóri érme
+    felvi medal-clear --yes         # megerősítés nélkül
+    """
+    from felvi_games.config import get_db_path
+    from felvi_games.db import get_engine
+    from sqlalchemy import text
+
+    db_path = db or get_db_path()
+    if not db_path.exists():
+        typer.echo(f"[!] DB nem található: {db_path}")
+        raise typer.Exit(code=1)
+
+    engine = get_engine(db_path)
+    with engine.connect() as conn:
+        if user:
+            cnt = conn.execute(
+                text("SELECT COUNT(*) FROM felhasznalo_eremek WHERE felhasznalo_nev = :u"),
+                {"u": user},
+            ).scalar() or 0
+        else:
+            cnt = conn.execute(text("SELECT COUNT(*) FROM felhasznalo_eremek")).scalar() or 0
+
+    scope = f"'{user}'" if user else "minden felhasználó"
+    typer.echo(f"\n{cnt} érem lesz törölve ({scope}).")
+
+    if cnt == 0:
+        typer.echo("Nincs mit törölni.")
+        return
+
+    if not yes:
+        typer.confirm("Folytatod?", abort=True)
+
+    with engine.begin() as conn:
+        if user:
+            conn.execute(
+                text("DELETE FROM felhasznalo_eremek WHERE felhasznalo_nev = :u"),
+                {"u": user},
+            )
+        else:
+            conn.execute(text("DELETE FROM felhasznalo_eremek"))
+
+    typer.echo(f"✅ {cnt} érem törölve.\n")
+
+
+# ---------------------------------------------------------------------------
+# felvi medal-recheck  – retroaktív éremkiértékelés minden felhasználóra
+# ---------------------------------------------------------------------------
+
+@app.command("medal-recheck")
+def medal_recheck_cmd(
+    db: Annotated[
+        Optional[Path], typer.Option("--db", help="SQLite DB útvonala (alap: FELVI_DB env)")
+    ] = None,
+    user: Annotated[
+        Optional[str], typer.Option("--user", help="Csak egy felhasználó kiértékelése")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Csak listázza a várható érmeket, nem ment")
+    ] = False,
+) -> None:
+    """Retroaktív éremkiértékelés – minden felhasználóra lefuttatja az összes szabályt.
+
+    Hasznos akkor, ha új érmek kerültek a katalógusba, vagy ha valaki lezáratlan
+    menettel rendelkezik, ahol a session-end éremcheck nem futott le.
+
+    \b
+    felvi medal-recheck               # minden felhasználó
+    felvi medal-recheck --user Lóri   # csak Lóri
+    felvi medal-recheck --dry-run     # csak kiírja, nem ment
+    """
+    from felvi_games.achievements import check_new_medals, simulate_medal_rules
+    from felvi_games.config import get_db_path
+    from felvi_games.db import FelhasznaloRecord, FeladatRepository, get_engine
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session as _Session
+
+    db_path = db or get_db_path()
+    if not db_path.exists():
+        typer.echo(f"[!] DB nem található: {db_path}")
+        raise typer.Exit(code=1)
+
+    repo = FeladatRepository(db_path)
+    engine = get_engine(db_path)
+
+    with _Session(engine) as s:
+        if user:
+            users = [user]
+        else:
+            users = list(s.scalars(select(FelhasznaloRecord.nev).order_by(FelhasznaloRecord.nev)))
+
+    typer.echo(f"\n=== Érem újrakiértékelés  (DB: {db_path})  dry_run={dry_run} ===\n")
+
+    total_granted = 0
+    for nev in users:
+        typer.echo(f"👤 {nev}")
+        if dry_run:
+            earned_ids = {fe.erem_id for fe in repo.get_eremek(nev, include_expired=True)}
+            results = simulate_medal_rules(nev, engine, earned_ids)
+            new_pending = [r for r in results if r.result and not r.already_earned]
+            would_repeat = [r for r in results if r.result and r.already_earned and r.ismetelheto]
+            if new_pending:
+                for r in new_pending:
+                    typer.echo(f"  🏅 {r.ikon} {r.nev}  → ÚJ")
+            if would_repeat:
+                for r in would_repeat:
+                    typer.echo(f"  🔁 {r.ikon} {r.nev}  → ismételné")
+            if not new_pending and not would_repeat:
+                typer.echo("  (nincs új érem)")
+        else:
+            before = {fe.erem_id for fe in repo.get_eremek(nev, include_expired=True)}
+            newly = check_new_medals(nev, None, repo)
+            if newly:
+                for e in newly:
+                    typer.echo(f"  ✅ {e.ikon} {e.nev}")
+                total_granted += len(newly)
+            else:
+                typer.echo("  (nincs új érem)")
+        typer.echo()
+
+    if not dry_run:
+        typer.echo(f"Összesen kiosztva: {total_granted} érem\n")
+
+
+# ---------------------------------------------------------------------------
 # felvi review  – AI review futtatása feladatokon
 # ---------------------------------------------------------------------------
 

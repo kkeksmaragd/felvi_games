@@ -193,12 +193,66 @@ EREM_KATALOGUS: dict[str, Erem] = {
         kategoria="felfedezes",
     ),
 
+    # ── Mérföldkövek (közbülső) ───────────────────────────────────────────────
+    "tiz_feladat": Erem(
+        id="tiz_feladat",
+        nev="Tíz feladat",
+        leiras="10 feladatot oldottál meg.",
+        ikon="🔟",
+        kategoria="merfoldko",
+    ),
+    "huszonot_feladat": Erem(
+        id="huszonot_feladat",
+        nev="Negyedszázad",
+        leiras="25 feladatot oldottál meg.",
+        ikon="🥈",
+        kategoria="merfoldko",
+    ),
+    "otven_feladat": Erem(
+        id="otven_feladat",
+        nev="Félszázad",
+        leiras="50 feladatot oldottál meg.",
+        ikon="🥇",
+        kategoria="merfoldko",
+    ),
+
+    # ── Teljesítmény (új) ─────────────────────────────────────────────────────
+    "szaz_pont": Erem(
+        id="szaz_pont",
+        nev="Százpontos",
+        leiras="Összesen 100 pontot gyűjtöttél.",
+        ikon="💰",
+        kategoria="teljesitmeny",
+    ),
+    "otszaz_pont": Erem(
+        id="otszaz_pont",
+        nev="Pontgyűjtő",
+        leiras="Összesen 500 pontot gyűjtöttél.",
+        ikon="💎",
+        kategoria="teljesitmeny",
+    ),
+    "esti_tanulas": Erem(
+        id="esti_tanulas",
+        nev="Éjjeli bagoly",
+        leiras="22:00 után oldottál meg feladatot.",
+        ikon="🦉",
+        kategoria="rendszeresseg",
+        ismetelheto=True,
+    ),
+
     # ── Kitartás ──────────────────────────────────────────────────────────────
     "visszatero": Erem(
         id="visszatero",
         nev="Visszatérő",
         leiras="Legalább 3 különböző napon játszottál összesen.",
         ikon="🔄",
+        kategoria="kitartas",
+    ),
+    "visszatero_tiz": Erem(
+        id="visszatero_tiz",
+        nev="Hűséges tanuló",
+        leiras="Legalább 10 különböző napon játszottál.",
+        ikon="🏅",
         kategoria="kitartas",
     ),
     "maraton": Erem(
@@ -490,19 +544,17 @@ def _rule_heti_haromszor(user: str, session_id: int | None, engine: "Engine") ->
 
 
 def _rule_reggeli_tanulas(user: str, session_id: int | None, engine: "Engine") -> bool:
+    """Any answer submitted before 08:00 local time (timestamps stored as naive local)."""
     from felvi_games.db import MegoldasRecord
     with Session(engine) as s:
         rows = s.scalars(
             select(MegoldasRecord.created_at)
-            .where(MegoldasRecord.felhasznalo_nev == user)
-            .order_by(MegoldasRecord.created_at.desc())
-            .limit(50)
+            .where(
+                MegoldasRecord.felhasznalo_nev == user,
+                func.strftime("%H", MegoldasRecord.created_at) < "08",
+            )
         ).all()
-    for dt in rows:
-        utc = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
-        if utc.hour < 8:
-            return True
-    return False
+    return len(rows) > 0
 
 
 def _rule_mindket_targy(user: str, session_id: int | None, engine: "Engine") -> bool:
@@ -551,6 +603,76 @@ def _rule_maraton(user: str, session_id: int | None, engine: "Engine") -> bool:
         return rec.feladat_limit >= 30 and rec.megoldott >= 30
 
 
+def _rule_tiz_feladat(user: str, session_id: int | None, engine: "Engine") -> bool:
+    from felvi_games.db import MegoldasRecord
+    with Session(engine) as s:
+        cnt = s.scalar(
+            select(func.count()).select_from(MegoldasRecord)
+            .where(MegoldasRecord.felhasznalo_nev == user)
+        ) or 0
+    return cnt >= 10
+
+
+def _rule_huszonot_feladat(user: str, session_id: int | None, engine: "Engine") -> bool:
+    from felvi_games.db import MegoldasRecord
+    with Session(engine) as s:
+        cnt = s.scalar(
+            select(func.count()).select_from(MegoldasRecord)
+            .where(MegoldasRecord.felhasznalo_nev == user)
+        ) or 0
+    return cnt >= 25
+
+
+def _rule_otven_feladat(user: str, session_id: int | None, engine: "Engine") -> bool:
+    from felvi_games.db import MegoldasRecord
+    with Session(engine) as s:
+        cnt = s.scalar(
+            select(func.count()).select_from(MegoldasRecord)
+            .where(MegoldasRecord.felhasznalo_nev == user)
+        ) or 0
+    return cnt >= 50
+
+
+def _rule_szaz_pont(user: str, session_id: int | None, engine: "Engine") -> bool:
+    from felvi_games.db import MegoldasRecord
+    with Session(engine) as s:
+        total = s.scalar(
+            select(func.sum(MegoldasRecord.pont))
+            .where(MegoldasRecord.felhasznalo_nev == user)
+        ) or 0
+    return total >= 100
+
+
+def _rule_otszaz_pont(user: str, session_id: int | None, engine: "Engine") -> bool:
+    from felvi_games.db import MegoldasRecord
+    with Session(engine) as s:
+        total = s.scalar(
+            select(func.sum(MegoldasRecord.pont))
+            .where(MegoldasRecord.felhasznalo_nev == user)
+        ) or 0
+    return total >= 500
+
+
+def _rule_esti_tanulas(user: str, session_id: int | None, engine: "Engine") -> bool:
+    """Any answer submitted at or after 22:00 local time (timestamps stored as naive local)."""
+    from felvi_games.db import MegoldasRecord
+    with Session(engine) as s:
+        rows = s.scalars(
+            select(MegoldasRecord.created_at)
+            .where(
+                MegoldasRecord.felhasznalo_nev == user,
+                func.strftime("%H", MegoldasRecord.created_at) >= "22",
+            )
+        ).all()
+    return len(rows) > 0
+
+
+def _rule_visszatero_tiz(user: str, session_id: int | None, engine: "Engine") -> bool:
+    with Session(engine) as s:
+        days = _distinct_play_days(s, user)
+    return len(days) >= 10
+
+
 def _rule_heti_bajnok(user: str, session_id: int | None, engine: "Engine") -> bool:
     """5+ distinct play days in the current week (Mon–Sun)."""
     now = datetime.now(timezone.utc)
@@ -571,6 +693,9 @@ RuleFn = Callable[[str, int | None, "Engine"], bool]
 
 SZABALY_REGISTRY: dict[str, RuleFn] = {
     "elso_menet": _rule_elso_menet,
+    "tiz_feladat": _rule_tiz_feladat,
+    "huszonot_feladat": _rule_huszonot_feladat,
+    "otven_feladat": _rule_otven_feladat,
     "szaz_feladat": _rule_szaz_feladat,
     "otszaz_feladat": _rule_otszaz_feladat,
     "ezer_feladat": _rule_ezer_feladat,
@@ -586,11 +711,15 @@ SZABALY_REGISTRY: dict[str, RuleFn] = {
     "pentek_matek_honap": _rule_pentek_matek_honap,
     "heti_haromszor": _rule_heti_haromszor,
     "reggeli_tanulas": _rule_reggeli_tanulas,
+    "esti_tanulas": _rule_esti_tanulas,
     "mindket_targy": _rule_mindket_targy,
     "minden_szint": _rule_minden_szint,
     "minden_feladattipus": _rule_minden_feladattipus,
     "visszatero": _rule_visszatero,
+    "visszatero_tiz": _rule_visszatero_tiz,
     "maraton": _rule_maraton,
+    "szaz_pont": _rule_szaz_pont,
+    "otszaz_pont": _rule_otszaz_pont,
     "heti_bajnok": _rule_heti_bajnok,
 }
 
