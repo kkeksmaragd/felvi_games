@@ -409,27 +409,34 @@ def _render_valasz_input(feladat: Feladat, gs: GameState) -> str:
     tipus = feladat.feladat_tipus
     ta_key = f"ta_{feladat.id}"
 
-    # Radio for igaz/hamis and többválasztós – selection writes directly into the
-    # text_area's session_state key so the widget reflects it on the same render pass.
+    # Radio for igaz/hamis and többválasztós – selection writes into the text_area's
+    # session_state key, but only when the selection *changes*, so subsequent edits
+    # in the text area are not overwritten on re-render.
     if tipus == "igaz_hamis":
+        radio_key = f"vh_{feladat.id}"
         sel = st.radio(
             "Válaszod:",
             options=["Igaz", "Hamis"],
             index=None,
             horizontal=True,
-            key=f"vh_{feladat.id}",
+            key=radio_key,
         )
-        if sel:
+        applied_key = f"_radio_applied_{feladat.id}"
+        if sel and st.session_state.get(applied_key) != sel:
+            st.session_state[applied_key] = sel
             st.session_state[ta_key] = sel
 
     elif tipus == "tobbvalasztos" and feladat.valaszlehetosegek:
+        radio_key = f"tv_{feladat.id}"
         sel = st.radio(
             "Válaszd ki a helyes választ:",
             options=feladat.valaszlehetosegek,
             index=None,
-            key=f"tv_{feladat.id}",
+            key=radio_key,
         )
-        if sel:
+        applied_key = f"_radio_applied_{feladat.id}"
+        if sel and st.session_state.get(applied_key) != sel:
+            st.session_state[applied_key] = sel
             st.session_state[ta_key] = sel
 
     else:
