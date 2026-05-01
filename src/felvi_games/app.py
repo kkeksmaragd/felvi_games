@@ -222,7 +222,7 @@ def start_kerdes(feladat: Feladat, gs: GameState) -> None:
 
 def _render_header(gs: GameState) -> None:
     today_stats = (
-        get_repo().get_today_stats(gs.felhasznalo)
+        get_repo().get_today_stats(gs.felhasznalo, targy=gs.targy, szint=gs.szint)
         if gs.felhasznalo
         else {"pont": gs.pont, "streak": gs.streak}
     )

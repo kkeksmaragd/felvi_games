@@ -957,7 +957,13 @@ class FeladatRepository:
                 "accuracy": round(helyes / total * 100, 1) if total else 0.0,
             }
 
-    def get_today_stats(self, felhasznalo_nev: str) -> dict[str, int]:
+    def get_today_stats(
+        self,
+        felhasznalo_nev: str,
+        *,
+        targy: str | None = None,
+        szint: str | None = None,
+    ) -> dict[str, int]:
         """Return today's persisted user stats (local-day based).
 
         Values are derived from ``MegoldasRecord`` rows and therefore survive
@@ -967,13 +973,17 @@ class FeladatRepository:
         today = datetime.now(local_tz).date()
 
         with Session(self._engine) as session:
-            attempts = list(
-                session.scalars(
-                    select(MegoldasRecord)
-                    .where(MegoldasRecord.felhasznalo_nev == felhasznalo_nev)
-                    .order_by(MegoldasRecord.created_at.asc(), MegoldasRecord.id.asc())
-                )
+            q = (
+                select(MegoldasRecord)
+                .join(FeladatRecord, MegoldasRecord.feladat_id == FeladatRecord.id)
+                .where(MegoldasRecord.felhasznalo_nev == felhasznalo_nev)
+                .order_by(MegoldasRecord.created_at.asc(), MegoldasRecord.id.asc())
             )
+            if targy is not None:
+                q = q.where(FeladatRecord.targy == targy)
+            if szint is not None and szint != "mind":
+                q = q.where(FeladatRecord.szint == szint)
+            attempts = list(session.scalars(q))
 
         today_attempts: list[MegoldasRecord] = []
         for a in attempts:
