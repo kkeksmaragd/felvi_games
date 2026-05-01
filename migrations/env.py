@@ -29,6 +29,22 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
+def _include_object(obj, name, type_, reflected, compare_to):
+    """Suppress known SQLite phantom diffs from autogenerate.
+
+    1. felhasznalok.id nullable – SQLite PRAGMA reports notnull=0 for
+       INTEGER PRIMARY KEY even though it is implicitly NOT NULL.
+    2. menetek unnamed FK – a legacy constraint with no name that cannot
+       be dropped/created by Alembic; was logically removed in c491db828a78.
+    """
+    if type_ == "column" and name == "id" and getattr(obj, "table", None) is not None:
+        if obj.table.name == "felhasznalok":
+            return False
+    if type_ == "foreign_key_constraint" and obj.parent.name == "menetek":
+        return False
+    return True
+
+
 def _get_url() -> str:
     """Return the DB URL, preferring the app's own config over alembic.ini."""
     url = config.get_main_option("sqlalchemy.url", "")
@@ -49,6 +65,7 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         render_as_batch=True,  # required for SQLite ALTER TABLE support
         compare_type=True,
+        include_object=_include_object,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -68,6 +85,7 @@ def run_migrations_online() -> None:
             target_metadata=target_metadata,
             render_as_batch=True,   # SQLite batch-alter support
             compare_type=True,
+            include_object=_include_object,
         )
         with context.begin_transaction():
             context.run_migrations()
