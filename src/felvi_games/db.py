@@ -44,6 +44,7 @@ from felvi_games.models import (
     FeladatCsoport,
     FeladatStatusz,
     FelhasznaloErem,
+    InterakcioTipus,
     Menet,
     _list_to_json,
 )
@@ -265,6 +266,10 @@ class MegoldasRecord(Base):
     elapsed_sec: Mapped[float | None] = mapped_column(Float, nullable=True)
     segitseg_kert: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     hibajelezes: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    ujraertekelt: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    ujraertekelt_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    eredeti_pont: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    jutalom_varakozik: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )
@@ -440,12 +445,30 @@ def _ensure_erem_columns(engine) -> None:
                 pass  # column already exists – safe to ignore
 
 
+def _ensure_megoldas_columns(engine) -> None:
+    """Add new columns to the megoldasok table on existing databases."""
+    new_columns = [
+        ("ujraertekelt", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("ujraertekelt_at", "DATETIME"),
+        ("eredeti_pont", "INTEGER"),
+        ("jutalom_varakozik", "BOOLEAN NOT NULL DEFAULT 0"),
+    ]
+    with engine.connect() as conn:
+        for col_name, col_def in new_columns:
+            try:
+                conn.execute(text(f"ALTER TABLE megoldasok ADD COLUMN {col_name} {col_def}"))
+                conn.commit()
+            except Exception:
+                pass  # column already exists – safe to ignore
+
+
 def init_db(db_path: Path | None = None) -> None:
     """Create all tables if they don't exist, then ensure new columns exist."""
     engine = get_engine(db_path)
     Base.metadata.create_all(engine)
     _ensure_feladat_columns(engine)
     _ensure_erem_columns(engine)
+    _ensure_megoldas_columns(engine)
 
 
 # ---------------------------------------------------------------------------
@@ -848,6 +871,143 @@ class FeladatRepository:
             ))
             session.commit()
 
+    def get_latest_megoldas_id(
+        self,
+        feladat_id: str,
+        *,
+        felhasznalo_nev: str | None = None,
+        adott_valasz: str | None = None,
+    ) -> int | None:
+        """Return the latest attempt ID for a task, optionally filtered by user/answer."""
+        with Session(self._engine) as session:
+            stmt = (
+                select(MegoldasRecord.id)
+                .where(MegoldasRecord.feladat_id == feladat_id)
+                .order_by(MegoldasRecord.created_at.desc(), MegoldasRecord.id.desc())
+            )
+            if felhasznalo_nev:
+                stmt = stmt.where(MegoldasRecord.felhasznalo_nev == felhasznalo_nev)
+            if adott_valasz is not None:
+                stmt = stmt.where(MegoldasRecord.adott_valasz == adott_valasz)
+            return session.scalars(stmt.limit(1)).first()
+
+    def reevaluate_megoldas(
+        self,
+        megoldas_id: int,
+        *,
+        ertekeles: Ertekeles,
+        source: str = "manual",
+        note: str | None = None,
+    ) -> dict:
+        """Update a previously stored answer with a new evaluation.
+
+        Sets reevaluation status fields, logs a reevaluation event, and marks
+        deferred reward processing when the new score is >50% and improved.
+        """
+        with Session(self._engine) as session:
+            rec = session.get(MegoldasRecord, megoldas_id)
+            if rec is None:
+                raise KeyError(f"Megoldas not found: {megoldas_id}")
+
+            feladat_rec = session.get(FeladatRecord, rec.feladat_id)
+            max_pont = int(feladat_rec.max_pont) if feladat_rec and feladat_rec.max_pont else 1
+
+            old_pont = int(rec.pont)
+            old_helyes = bool(rec.helyes)
+            new_pont = max(0, min(int(ertekeles.pont), max_pont))
+            new_helyes = bool(ertekeles.helyes)
+
+            old_ratio = (old_pont / max_pont) if max_pont > 0 else 0.0
+            new_ratio = (new_pont / max_pont) if max_pont > 0 else 0.0
+            should_defer_reward = (new_ratio > 0.5) and (new_pont > old_pont)
+
+            if rec.eredeti_pont is None:
+                rec.eredeti_pont = old_pont
+            rec.pont = new_pont
+            rec.helyes = new_helyes
+            rec.visszajelzes = ertekeles.visszajelzes
+            rec.ujraertekelt = True
+            rec.ujraertekelt_at = datetime.now(timezone.utc)
+            rec.jutalom_varakozik = bool(should_defer_reward)
+            session.commit()
+
+            result = {
+                "megoldas_id": rec.id,
+                "felhasznalo_nev": rec.felhasznalo_nev,
+                "feladat_id": rec.feladat_id,
+                "old_pont": old_pont,
+                "new_pont": new_pont,
+                "max_pont": max_pont,
+                "old_helyes": old_helyes,
+                "new_helyes": new_helyes,
+                "deferred_reward": bool(should_defer_reward),
+            }
+
+        self.log_interakcio(
+            result["felhasznalo_nev"],
+            InterakcioTipus.UJRAERTEKELES,
+            feladat_id=result["feladat_id"],
+            meta={
+                "source": source,
+                "note": note,
+                "megoldas_id": result["megoldas_id"],
+                "old_pont": result["old_pont"],
+                "new_pont": result["new_pont"],
+                "max_pont": result["max_pont"],
+                "deferred_reward": result["deferred_reward"],
+            },
+            process_pending_rewards=False,
+        )
+        return result
+
+    def process_pending_ujraertekeles_jutalom(
+        self,
+        felhasznalo_nev: str,
+        *,
+        trigger_tipus: str | None = None,
+        menet_id: int | None = None,
+    ) -> list[str]:
+        """Consume pending reevaluation reward flags and award medals once.
+
+        This is designed to be called on the user's next interaction after
+        reevaluation. Returns newly earned medal IDs.
+        """
+        with Session(self._engine) as session:
+            pending_ids = list(session.scalars(
+                select(MegoldasRecord.id)
+                .where(MegoldasRecord.felhasznalo_nev == felhasznalo_nev)
+                .where(MegoldasRecord.jutalom_varakozik.is_(True))
+            ))
+
+        if not pending_ids:
+            return []
+
+        from felvi_games.achievements import check_new_medals
+
+        awarded = check_new_medals(felhasznalo_nev, menet_id, self)
+        awarded_ids = [e.id for e in awarded]
+
+        with Session(self._engine) as session:
+            session.execute(
+                update(MegoldasRecord)
+                .where(MegoldasRecord.id.in_(pending_ids))
+                .values(jutalom_varakozik=False)
+            )
+            session.commit()
+
+        self.log_interakcio(
+            felhasznalo_nev,
+            InterakcioTipus.UJRAERTEKELES_JUTALOM,
+            menet_id=menet_id,
+            meta={
+                "trigger_tipus": trigger_tipus,
+                "pending_count": len(pending_ids),
+                "awarded_medals": awarded_ids,
+            },
+            process_pending_rewards=False,
+        )
+        return awarded_ids
+
     def save_review(self, feladat: Feladat, megjegyzes: str | None = None) -> Feladat:
         """Persist a reviewed feladat.
 
@@ -1145,6 +1305,7 @@ class FeladatRepository:
         feladat_id: str | None = None,
         menet_id: int | None = None,
         meta: dict | None = None,
+        process_pending_rewards: bool = True,
     ) -> None:
         """Append one raw behaviour event to the interaction log."""
         import json as _json
@@ -1161,6 +1322,20 @@ class FeladatRepository:
                 meta=_json.dumps(meta, ensure_ascii=False) if meta else None,
             ))
             session.commit()
+
+        if (
+            process_pending_rewards
+            and felhasznalo_nev
+            and tipus not in {
+                InterakcioTipus.UJRAERTEKELES,
+                InterakcioTipus.UJRAERTEKELES_JUTALOM,
+            }
+        ):
+            self.process_pending_ujraertekeles_jutalom(
+                felhasznalo_nev,
+                trigger_tipus=tipus,
+                menet_id=menet_id,
+            )
 
     def get_interakciok(
         self,

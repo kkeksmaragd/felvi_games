@@ -33,6 +33,8 @@ class InterakcioTipus(str, Enum):
     SZINT_VALTAS = "szint_valtas"
     TTS_LEJATSZO = "tts_lejatszo"
     FELADAT_KIHAGYAS = "feladat_kihagyas"
+    UJRAERTEKELES = "ujraertekeles"
+    UJRAERTEKELES_JUTALOM = "ujraertekeles_jutalom"
 
 
 class FeladatTipus(str, Enum):

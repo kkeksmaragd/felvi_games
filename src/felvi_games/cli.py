@@ -12,6 +12,7 @@ Belépési pont:
 """
 from __future__ import annotations
 
+import sys
 from enum import Enum
 from pathlib import Path
 from typing import Annotated, Optional
@@ -19,6 +20,23 @@ from typing import Annotated, Optional
 import typer
 
 from felvi_games.config import setup_logging
+
+# Ensure stdout/stderr can handle all Unicode characters when redirected on Windows.
+# Set the console output code page to UTF-8 first so PowerShell interprets the pipe correctly.
+# if sys.platform == "win32":
+#     try:
+#         import ctypes
+#         # isolation level 1
+#         ctypes.windll.kernel32.SetConsoleOutputCP()
+#     except Exception:
+#         pass
+
+# for _stream in (sys.stdout, sys.stderr):
+#     if hasattr(_stream, "reconfigure"):
+#         try:
+#             _stream.reconfigure(encoding="utf-8", errors="replace")
+#         except Exception:
+#             pass
 
 setup_logging()
 
@@ -701,6 +719,9 @@ def wrong_cmd(
     detail: Annotated[
         bool, typer.Option("--detail", help="A ténylegesen beírt hibás válaszok is jelenjenek meg")
     ] = False,
+    output: Annotated[
+        Optional[Path], typer.Option("--output", help="Kimenet fájl útvonala (üres = stdout)")
+    ] = None,
 ) -> None:
     """Feladatok, amelyekre legalább egy hibás választ adtak (legtöbbet rontottak elöl)."""
     from collections import Counter
@@ -724,35 +745,149 @@ def wrong_cmd(
     )
 
     scope = f"  (user={user})" if user else ""
-    typer.echo(f"\n=== Hibásan megoldott feladatok  (DB: {db_path}){scope} ===\n")
+    lines = [f"\n=== Hibásan megoldott feladatok  (DB: {db_path}){scope} ===\n"]
 
     if not rows:
-        typer.echo("  Nincs találat (még senki sem rontott el egy feladatot sem ebben a körben).")
-        typer.echo()
-        return
+        lines.append("  Nincs találat (még senki sem rontott el egy feladatot sem ebben a körben).")
+        lines.append("")
+    else:
+        for r in rows:
+            ev_label = str(r.ev) if r.ev else "?"
+            tipus = r.feladat_tipus or "-"
+            kerdes_short = (r.kerdes[:90] + "…") if len(r.kerdes) > 90 else r.kerdes
+            helyes_short = (r.helyes_valasz[:50] + "…") if len(r.helyes_valasz) > 50 else r.helyes_valasz
 
-    for r in rows:
-        ev_label = str(r.ev) if r.ev else "?"
-        tipus = r.feladat_tipus or "-"
-        kerdes_short = (r.kerdes[:90] + "…") if len(r.kerdes) > 90 else r.kerdes
-        helyes_short = (r.helyes_valasz[:50] + "…") if len(r.helyes_valasz) > 50 else r.helyes_valasz
+            lines.append(
+                f"  [{r.targy}/{r.szint}/{ev_label}] {tipus}  "
+                f"hibás: {r.hibas_db}/{r.osszes_db}  ({r.rontas_pct:.0f}% rontás)"
+            )
+            lines.append(f"    Kérdés:        {kerdes_short}")
+            lines.append(f"    Helyes válasz: {helyes_short}")
+            lines.append(f"    ID:            {r.feladat_id}")
 
-        typer.echo(
-            f"  [{r.targy}/{r.szint}/{ev_label}] {tipus}  "
-            f"hibás: {r.hibas_db}/{r.osszes_db}  ({r.rontas_pct:.0f}% rontás)"
+            if detail and r.hibas_valaszok:
+                cnt = Counter(r.hibas_valaszok)
+                parts = [f'"{v}"×{c}' if c > 1 else f'"{v}"' for v, c in cnt.most_common()]
+                lines.append(f"    Hibás válaszok: {', '.join(parts)}")
+
+            lines.append("")
+
+        lines.append(f"  Összesen: {len(rows)} feladat listázva.\n")
+
+    output_text = "\n".join(lines)
+    if output:
+        output.write_text(output_text, encoding="utf-8")
+        typer.echo(f"✓ Kiírva: {output}")
+    else:
+        typer.echo(output_text, nl=False)
+
+
+# ---------------------------------------------------------------------------
+# felvi check-answer  – GPT-alapú válaszellenőrzés egy feladatra
+# ---------------------------------------------------------------------------
+
+@app.command("check-answer")
+def check_answer_cmd(
+    feladat_id: Annotated[str, typer.Argument(help="Feladat ID (pl. mag4_2021_3_8_a)")],
+    valasz: Annotated[str, typer.Argument(help="Ellenőrizendő válasz")],
+    db: Annotated[
+        Optional[Path], typer.Option("--db", help="SQLite DB útvonala (alap: FELVI_DB env)")
+    ] = None,
+    apply_latest: Annotated[
+        bool,
+        typer.Option(
+            "--apply-latest",
+            help="A legfrissebb, tárolt válaszkísérletet újraértékeli ezzel az eredménnyel"
+        ),
+    ] = False,
+    user: Annotated[
+        Optional[str],
+        typer.Option("--user", help="Felhasználó szűrő --apply-latest használatakor"),
+    ] = None,
+) -> None:
+    """GPT-tel ellenőriz egy választ egy adott feladatra.
+
+    Alapból csak kiírja az eredményt. ``--apply-latest`` esetén a legfrissebb,
+    eltárolt megoldásra rá is menti az újraértékelt pontszámot.
+    """
+    from felvi_games.ai import check_answer
+    from felvi_games.config import get_db_path
+    from felvi_games.db import FeladatRecord, FeladatRepository
+    from sqlalchemy.orm import Session
+
+    db_path = db or get_db_path()
+    if not db_path.exists():
+        typer.echo(f"[!] DB nem található: {db_path}")
+        raise typer.Exit(code=1)
+
+    repo = FeladatRepository(db_path)
+    with Session(repo._engine) as s:
+        f = s.get(FeladatRecord, feladat_id)
+
+    if not f:
+        typer.echo(f"[!] Feladat nem található: {feladat_id}")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"\n=== GPT válaszellenőrzés ===\n")
+    typer.echo(f"  Feladat:       {feladat_id}  [{f.targy}/{f.szint}]")
+    typer.echo(f"  Kérdés:        {f.kerdes[:120]}")
+    typer.echo(f"  Helyes válasz: {f.helyes_valasz}")
+
+    elfogadott = None
+    if f.elfogadott_valaszok:
+        import json as _json
+        try:
+            elfogadott = _json.loads(f.elfogadott_valaszok)
+            typer.echo(f"  Elfogadott:    {', '.join(elfogadott[:5])}{'…' if len(elfogadott) > 5 else ''}")
+        except Exception:
+            pass
+
+    typer.echo(f"  Beküldött:     {valasz}")
+    typer.echo("")
+
+    with typer.progressbar(length=1, label="GPT értékel") as progress:
+        ert = check_answer(
+            f.kerdes,
+            f.helyes_valasz,
+            valasz,
+            f.magyarazat,
+            elfogadott_valaszok=elfogadott,
+            feladat_tipus=f.feladat_tipus,
+            max_pont=f.max_pont,
+            reszpontozas=f.reszpontozas,
         )
-        typer.echo(f"    Kérdés:        {kerdes_short}")
-        typer.echo(f"    Helyes válasz: {helyes_short}")
-        typer.echo(f"    ID:            {r.feladat_id}")
+        progress.update(1)
 
-        if detail and r.hibas_valaszok:
-            cnt = Counter(r.hibas_valaszok)
-            parts = [f'"{v}"×{c}' if c > 1 else f'"{v}"' for v, c in cnt.most_common()]
-            typer.echo(f"    Hibás válaszok: {', '.join(parts)}")
+    eredmeny = "✅ HELYES" if ert.helyes else ("⚠️  RÉSZLEGES" if ert.pont > 0 else "❌ HELYTELEN")
+    typer.echo(f"  Eredmény:      {eredmeny}  ({ert.pont}/{f.max_pont} pont)")
+    typer.echo(f"  Visszajelzés:  {ert.visszajelzes}")
+    typer.echo("")
 
-        typer.echo()
+    if apply_latest:
+        megoldas_id = repo.get_latest_megoldas_id(
+            feladat_id,
+            felhasznalo_nev=user,
+            adott_valasz=valasz,
+        )
+        if megoldas_id is None:
+            who = f" user={user}" if user else ""
+            typer.echo(f"[!] Nem található eltárolt kísérlet ehhez: {feladat_id}{who}")
+            raise typer.Exit(code=1)
 
-    typer.echo(f"  Összesen: {len(rows)} feladat listázva.\n")
+        rv = repo.reevaluate_megoldas(
+            megoldas_id,
+            ertekeles=ert,
+            source="cli_check_answer",
+            note="Újraértékelés check-answer parancsból",
+        )
+        typer.echo("=== Újraértékelés mentve ===")
+        typer.echo(f"  Megoldás ID:   {rv['megoldas_id']}")
+        typer.echo(f"  Pontszám:      {rv['old_pont']} → {rv['new_pont']} / {rv['max_pont']}")
+        if rv["deferred_reward"]:
+            typer.echo("  Jutalom:       Függőben (következő interakciónál ellenőrizve)")
+        else:
+            typer.echo("  Jutalom:       Nincs új, függő reevaluation-jutalom")
+        typer.echo("")
 
 
 # ---------------------------------------------------------------------------
