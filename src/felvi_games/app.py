@@ -1041,11 +1041,73 @@ def _render_login(gs: GameState) -> None:
 
 
 
+def _load_active_challenges(user: str) -> list[dict]:
+    """Return active (not-yet-earned) dynamic medal challenges for *user*.
+
+    Each item: {id, ikon, nev, leiras, created_at_str, teljesul: bool}
+    """
+    from datetime import datetime, timezone
+    from felvi_games.achievements import _eval_dynamic_condition
+    from sqlalchemy import text
+    from sqlalchemy.orm import Session as _S
+    import json as _json
+
+    engine = get_repo()._engine
+    earned_ids = {fe.erem_id for fe in get_repo().get_eremek(user)}
+    result = []
+    with _S(engine) as s:
+        rows = s.execute(
+            text(
+                "SELECT id, nev, ikon, leiras, condition_json, created_at "
+                "FROM eremek "
+                "WHERE condition_json IS NOT NULL AND condition_json != '' "
+                "AND (cel_felhasznalo IS NULL OR cel_felhasznalo = :u) "
+                "ORDER BY created_at DESC"
+            ),
+            {"u": user},
+        ).all()
+    for r in rows:
+        if r.id in earned_ids:
+            continue
+        try:
+            cond = _json.loads(r.condition_json)
+            vf = r.created_at
+            if isinstance(vf, str):
+                vf = datetime.fromisoformat(vf)
+            if vf is not None and vf.tzinfo is None:
+                vf = vf.replace(tzinfo=timezone.utc)
+            teljesul = _eval_dynamic_condition(user, cond, engine, valid_from=vf)
+            result.append({
+                "id": r.id,
+                "ikon": r.ikon or "🏅",
+                "nev": r.nev,
+                "leiras": r.leiras or "",
+                "created_at_str": vf.strftime("%Y-%m-%d %H:%M") if vf else "-",
+                "teljesul": teljesul,
+            })
+        except Exception:  # noqa: BLE001
+            pass
+    return result
+
+
 def _show_daily_insight_dialog(insight_data: dict) -> None:
     """Display the AI-generated daily progress insight."""
     from felvi_games.medal_assets import get_medal_asset
 
-    st.markdown(f"### {insight_data['greeting']}")
+    greeting = insight_data.get("greeting", "")
+    if greeting:
+        st.markdown(f"### {greeting}")
+
+    # Active challenges — always shown
+    challenges = insight_data.get("active_challenges", [])
+    if challenges:
+        st.markdown("#### 🏆 Aktív kihívásaid:")
+        for ch in challenges:
+            if ch["teljesul"]:
+                st.success(f"{ch['ikon']} **{ch['nev']}** — ✅ Teljesítetted!", icon=None)
+            else:
+                st.info(f"{ch['ikon']} **{ch['nev']}**\n\n{ch['leiras']}", icon="⏳")
+        st.markdown("---")
 
     close = insight_data.get("close_medals", [])
     if close:
@@ -1164,6 +1226,7 @@ def main() -> None:
                 insight = daily_check(gs.felhasznalo, get_repo())
             except Exception:
                 insight = None
+            active_challenges = _load_active_challenges(gs.felhasznalo)
         if insight is not None:
             logger.debug("daily_check | insight received, storing in session_state")
             # serialise to a plain dict so Streamlit can keep it in session_state
@@ -1182,9 +1245,20 @@ def main() -> None:
                     if insight.teaser_medal else None
                 ),
                 "new_medal_created": insight.new_medal_created,
+                "active_challenges": active_challenges,
+            }
+        elif active_challenges:
+            # Not first login today, but has active challenges — show them
+            logger.debug("daily_check | no insight but %d active challenges", len(active_challenges))
+            st.session_state["_napi_insight"] = {
+                "greeting": "",
+                "close_medals": [],
+                "teaser_medal": None,
+                "new_medal_created": False,
+                "active_challenges": active_challenges,
             }
         else:
-            logger.debug("daily_check | no insight (not first login today)")
+            logger.debug("daily_check | no insight, no challenges")
             # Mark as checked so we don't call again this session
             st.session_state["_napi_insight"] = None
 
