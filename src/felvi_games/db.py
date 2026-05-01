@@ -957,6 +957,32 @@ class FeladatRepository:
                 "accuracy": round(helyes / total * 100, 1) if total else 0.0,
             }
 
+    def count_user_solved_feladatok(
+        self,
+        felhasznalo_nev: str,
+        *,
+        targy: str | None = None,
+        szint: str | None = None,
+    ) -> int:
+        """Count distinct feladatok ever solved (pont > 0) by a user.
+
+        Optional filters can scope the count to a subject (targy) and level
+        (szint). When ``szint == "mind"`` the level filter is skipped.
+        """
+        with Session(self._engine) as session:
+            q = (
+                select(func.count(func.distinct(MegoldasRecord.feladat_id)))
+                .join(FeladatRecord, MegoldasRecord.feladat_id == FeladatRecord.id)
+                .where(MegoldasRecord.felhasznalo_nev == felhasznalo_nev)
+                .where(MegoldasRecord.pont > 0)
+            )
+            if targy is not None:
+                q = q.where(FeladatRecord.targy == targy)
+            if szint is not None and szint != "mind":
+                q = q.where(FeladatRecord.szint == szint)
+            value = session.scalar(q)
+            return int(value or 0)
+
     def get_today_stats(
         self,
         felhasznalo_nev: str,

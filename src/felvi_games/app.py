@@ -221,8 +221,12 @@ def start_kerdes(feladat: Feladat, gs: GameState) -> None:
 
 
 def _render_header(gs: GameState) -> None:
+    # Read widget state directly to avoid the 1-rerun lag before radio widgets
+    # assign back to gs (header renders before _render_valasztas).
+    targy = st.session_state.get("radio_targy", gs.targy)
+    szint = st.session_state.get("radio_szint", gs.szint)
     today_stats = (
-        get_repo().get_today_stats(gs.felhasznalo, targy=gs.targy, szint=gs.szint)
+        get_repo().get_today_stats(gs.felhasznalo, targy=targy, szint=szint)
         if gs.felhasznalo
         else {"pont": gs.pont, "streak": gs.streak}
     )
@@ -232,10 +236,18 @@ def _render_header(gs: GameState) -> None:
         if gs.felhasznalo:
             st.caption(f"👤 {gs.felhasznalo}")
     with col2:
-        st.metric("Pont", today_stats["pont"])
+        st.metric(
+            "Mai pont",
+            today_stats["pont"],
+            help="Mai pontok a kiválasztott tárgy/szint szűrésben.",
+        )
     with col3:
         streak = today_stats["streak"]
-        st.metric("Sorozat", f"{'🔥' * min(streak, 5)} {streak}")
+        st.metric(
+            "Mai sorozat",
+            f"{'🔥' * min(streak, 5)} {streak}",
+            help="Mai helyes-válasz sorozat a kiválasztott tárgy/szint szűrésben.",
+        )
     st.divider()
 
 
@@ -247,17 +259,33 @@ def _render_sidebar(gs: GameState) -> None:
             else {"pont": gs.pont, "streak": gs.streak, "max_streak": gs.max_streak, "megoldott": len(gs.megoldott_ids)}
         )
         st.header("📊 Statisztika")
-        st.metric("Összes pont", today_stats["pont"])
-        st.metric("Jelenlegi sorozat", today_stats["streak"])
-        st.metric("Legjobb sorozat", today_stats["max_streak"])
-        st.metric("Megoldott feladatok", today_stats["megoldott"])
+        st.metric(
+            "Mai pont",
+            today_stats["pont"],
+            help="Mai összesített pont minden tárgyból és szintből.",
+        )
+        st.metric(
+            "Mai sorozat",
+            today_stats["streak"],
+            help="Mai aktuális helyes-válasz sorozat minden tárgyból és szintből.",
+        )
+        st.metric(
+            "Mai legjobb sorozat",
+            today_stats["max_streak"],
+            help="Mai napon elért leghosszabb helyes-válasz sorozat.",
+        )
+        st.metric(
+            "Mai megoldott",
+            today_stats["megoldott"],
+            help="Mai megoldások száma minden tárgyból és szintből.",
+        )
 
         if gs.menet_id:
             st.divider()
             st.caption("📋 Aktuális menet")
             st.progress(
-                min(gs.menet_megoldott / gs.menet_cel, 1.0),
-                text=f"Feladat: {gs.menet_megoldott} / {gs.menet_cel}",
+                min(gs.pont / gs.menet_cel, 1.0),
+                text=f"Pont: {gs.pont} / {gs.menet_cel}",
             )
 
         st.divider()
@@ -516,15 +544,23 @@ def _render_valasztas(
         else:
             st.warning("Nincs több feladat ebben a kategóriában.")
 
-    keszlet = feladatok.get(gs.targy, [])
-    if gs.szint != "mind":
-        keszlet = [f for f in keszlet if f.szint == gs.szint]
-    megoldott_itt = sum(1 for f in keszlet if f.id in gs.megoldott_ids)
+    _targy = st.session_state.get("radio_targy", gs.targy)
+    _szint = st.session_state.get("radio_szint", gs.szint)
+    keszlet = feladatok.get(_targy, [])
+    if _szint != "mind":
+        keszlet = [f for f in keszlet if f.szint == _szint]
+
+    megoldott_itt = (
+        get_repo().count_user_solved_feladatok(gs.felhasznalo, targy=_targy, szint=_szint)
+        if gs.felhasznalo
+        else sum(1 for f in keszlet if f.id in gs.megoldott_ids)
+    )
     if keszlet:
         st.progress(
-            megoldott_itt / len(keszlet),
-            text=f"Megoldott: {megoldott_itt}/{len(keszlet)}",
+            min(megoldott_itt / len(keszlet), 1.0),
+            text=f"Összesen megoldott ebben a szűrésben: {megoldott_itt}/{len(keszlet)}",
         )
+        st.caption("ℹ️ Összesített mutató: a felhasználó által valaha pontot érő megoldással teljesített feladatok száma a kiválasztott tárgy/szint szerint.")
 
 
 def _render_csoport_context(feladat: Feladat) -> None:
