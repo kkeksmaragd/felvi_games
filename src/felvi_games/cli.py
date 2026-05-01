@@ -1162,14 +1162,39 @@ def medal_check_cmd(
     db: Annotated[
         Optional[Path], typer.Option("--db", help="SQLite DB útvonala (alap: FELVI_DB env)")
     ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Megmutatja a duplikátumokat és mit ér el a törlés+újraértékelés, de NEM ment")
+    ] = False,
+    clear: Annotated[
+        bool, typer.Option("--clear", help="Törli az összes szerzett érmet és újra futtatja a check_new_medals-t")
+    ] = False,
+    simulate: Annotated[
+        bool, typer.Option("--simulate", help="Időrendi visszajátszás: megmutatja mikor sült volna el minden érem először")
+    ] = False,
+    apply: Annotated[
+        bool, typer.Option("--apply", help="--simulate után ténylegesen törli és helyes időbélyeggel újraosztja az érmeket")
+    ] = False,
 ) -> None:
-    """Kiértékeli az összes dinamikus érem-feltételt és kiosztja a teljesített érmeket.
+    """Kiértékeli az összes érem-feltételt és kiosztja a teljesített érmeket.
 
-    Hasznos ha az alkalmazás nem osztotta ki automatikusan a megszerzett érmeket.
+    --dry-run:  duplikátum-ellenőrzés + szimulációs összefoglaló, nem módosít.
+    --simulate: időrendi visszajátszás – megmutatja mikor szerezte volna az egyes érmeket.
+    --simulate --apply: clear + újraosztás helyes (első tüzelés) időbélyegekkel.
+    --clear:    törli az összes szerzett érmet és nulláról értékeli újra (mai dátummal).
     """
-    from felvi_games.achievements import check_new_medals
+    from felvi_games.achievements import check_new_medals, SZABALY_REGISTRY
     from felvi_games.config import get_db_path
-    from felvi_games.db import FeladatRepository
+    from felvi_games.db import FeladatRepository, FelhasznaloEremRecord
+    from sqlalchemy import select, delete as sa_delete
+    from sqlalchemy.orm import Session
+    from collections import Counter
+
+    if dry_run and clear:
+        typer.echo("[!] A --dry-run és --clear együtt nem használható.")
+        raise typer.Exit(code=2)
+    if apply and not simulate:
+        typer.echo("[!] Az --apply csak --simulate-tal együtt használható.")
+        raise typer.Exit(code=2)
 
     db_path = db or get_db_path()
     if not db_path.exists():
@@ -1177,7 +1202,263 @@ def medal_check_cmd(
         raise typer.Exit(code=1)
 
     repo = FeladatRepository(db_path)
+
+    # ── Fetch all current award rows ──────────────────────────────────────
+    with Session(repo._engine) as s:
+        award_rows = s.execute(
+            select(FelhasznaloEremRecord)
+            .where(FelhasznaloEremRecord.felhasznalo_nev == user)
+            .order_by(FelhasznaloEremRecord.erem_id, FelhasznaloEremRecord.szerzett_at)
+        ).scalars().all()
+        awards = [(r.id, r.erem_id, r.szerzett_at, r.szamlalo) for r in award_rows]
+
+    counts = Counter(eid for _, eid, _, _ in awards)
+    duplicates = {eid: cnt for eid, cnt in counts.items() if cnt > 1}
+
+    # ── SIMULATE ─────────────────────────────────────────────────────────
+    if simulate:
+        from datetime import timezone as _tz
+        from felvi_games.achievements import (
+            SZABALY_REGISTRY, _eval_dynamic_condition, _simulation_as_of,
+        )
+        from felvi_games.db import MegoldasRecord, MenetRecord
+        from sqlalchemy import update as sa_update
+        from sqlalchemy.orm import Session
+
+        # medals that depend on "current time" externally (can't be simulated)
+        SKIP_SIM = {"tokeletes_menet", "maraton", "pentek_matek_honap"}
+
+        # Collect all timestamped events for this user, sorted
+        with Session(repo._engine) as s:
+            megoldas_ts = list(s.scalars(
+                select(MegoldasRecord.created_at)
+                .where(MegoldasRecord.felhasznalo_nev == user)
+                .order_by(MegoldasRecord.created_at)
+            ).all())
+            menet_ts = list(s.scalars(
+                select(MenetRecord.ended_at)
+                .where(MenetRecord.felhasznalo_nev == user,
+                       MenetRecord.ended_at.is_not(None))
+                .order_by(MenetRecord.ended_at)
+            ).all())
+
+        def _utc(dt: "datetime") -> "datetime":
+            return dt.replace(tzinfo=_tz.utc) if dt.tzinfo is None else dt
+
+        all_ts = sorted({_utc(t) for t in megoldas_ts + menet_ts})
+
+        if not all_ts:
+            typer.echo(f"  Nincs esemény a DB-ban ({user}) – semmi szimulálható.")
+            return
+
+        catalog = repo.get_erem_katalogus(user)
+        first_fire: dict[str, "datetime"] = {}  # erem_id → first-fire timestamp
+
+        typer.echo(f"\n=== Érem időrendi szimuláció: {user}  (DB: {db_path}) ===")
+        typer.echo(f"  {len(all_ts)} esemény · {len(catalog)} katalógus-érem\n")
+
+        for ts in all_ts:
+            token = _simulation_as_of.set(ts)
+            try:
+                for erem_id, erem in catalog.items():
+                    if erem_id in first_fire or erem_id in SKIP_SIM:
+                        continue
+                    # Skip dynamic medals that haven't been created yet at this point in time
+                    if erem.condition is not None and erem.condition_valid_from is not None:
+                        vf = erem.condition_valid_from
+                        vf = vf if vf.tzinfo else vf.replace(tzinfo=_tz.utc)
+                        if ts < vf:
+                            continue
+                    rule_fn = SZABALY_REGISTRY.get(erem_id)
+                    if rule_fn is None:
+                        if not erem.condition:
+                            continue
+                        try:
+                            earned = _eval_dynamic_condition(
+                                user, erem.condition, repo._engine,
+                                valid_from=erem.condition_valid_from,
+                            )
+                        except Exception:
+                            earned = False
+                    else:
+                        try:
+                            earned = rule_fn(user, None, repo._engine)
+                        except Exception:
+                            earned = False
+                    if earned:
+                        first_fire[erem_id] = ts
+            finally:
+                _simulation_as_of.reset(token)
+
+        typer.echo(f"  Szimulált eredmény: {len(first_fire)} érem\n")
+        for eid, ts in sorted(first_fire.items(), key=lambda x: x[1]):
+            e = catalog.get(eid)
+            label = f"{e.ikon}  {e.nev}" if e else eid
+            typer.echo(f"    • {label:40s}  {ts.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        # compare with current
+        current_ids = set(counts.keys())
+        would_ids = set(first_fire.keys())
+        lost = current_ids - would_ids
+        new_ = would_ids - current_ids
+        if lost:
+            typer.echo(f"\n  ⚠️  Elveszne (feltétel már nem teljesül): {', '.join(lost)}")
+        if new_:
+            typer.echo(f"\n  ✨ Újként kerülne kiosztásra: {', '.join(new_)}")
+        if duplicates:
+            typer.echo(f"\n  ✅ Duplikált sorok megszűnnek: {', '.join(duplicates.keys())}")
+
+        if not apply:
+            typer.echo(f"\n  (Semmi nem változott. Adj hozzá --apply-t a tényleges clear+újraosztáshoz.)\n")
+            return
+
+        # ── Apply: clear + re-grant with corrected timestamps ────────────
+        typer.echo(f"\n  Alkalmazás: {len(awards)} sor törlése + {len(first_fire)} érem újraosztása helyes időbélyeggel...")
+        from datetime import timedelta
+        with Session(repo._engine) as s:
+            s.execute(sa_delete(FelhasznaloEremRecord)
+                      .where(FelhasznaloEremRecord.felhasznalo_nev == user))
+            s.commit()
+
+        for eid, ts in sorted(first_fire.items(), key=lambda x: x[1]):
+            e = catalog.get(eid)
+            if e is None:
+                continue
+            from datetime import timedelta
+            expires = ts + timedelta(days=e.ervenyes_napig) if e.ideiglenes and e.ervenyes_napig else None
+            repo.grant_erem(user, eid, lejarat_at=expires)
+            # Backdate szerzett_at to first-fire time
+            with Session(repo._engine) as s:
+                s.execute(
+                    sa_update(FelhasznaloEremRecord)
+                    .where(FelhasznaloEremRecord.felhasznalo_nev == user,
+                           FelhasznaloEremRecord.erem_id == eid)
+                    .values(szerzett_at=ts)
+                )
+                s.commit()
+
+        typer.echo(f"  ✅ Kész. {len(first_fire)} érem újraosztva helyes időbélyeggel.\n")
+        return
+
+    # ── DRY-RUN ──────────────────────────────────────────────────────────
+    if dry_run:
+        from datetime import datetime, timezone as _tz
+        from felvi_games.achievements import (
+            SZABALY_REGISTRY, _eval_dynamic_condition, _count_dynamic_condition,
+        )
+
+        typer.echo(f"\n=== Érem dry-run szimulació: {user}  (DB: {db_path}) ===\n")
+
+        # ── 1. Current state ─────────────────────────────────────────────
+        typer.echo(f"  JELENLEGI ÁLLAPOT")
+        typer.echo(f"  Szerzett éremsorok száma: {len(awards)}")
+        typer.echo(f"  Egyedi érem-id-k:         {len(counts)}")
+
+        if duplicates:
+            typer.echo(f"\n  ⚠️  Duplikált sorok ({len(duplicates)} érem):")
+            for eid, cnt in duplicates.items():
+                rows_for = [(rid, ts) for rid, eid2, ts, _ in awards if eid2 == eid]
+                typer.echo(f"    {eid}  → {cnt} sor  (row id-k: {[r[0] for r in rows_for]})")
+                for rid, ts in rows_for:
+                    typer.echo(f"       row id={rid}  szerzett={ts}")
+        else:
+            typer.echo("  ✅ Nincs duplikált érem-sor.")
+
+        # ── 2. Simulate clear + reeval ───────────────────────────────────
+        typer.echo(f"\n  SZIMULÁCIÓ (ha --clear futna most)")
+        typer.echo(f"  Törlésre kerülne: {len(awards)} award-sor")
+
+        # Preserve original first-earned timestamps per medal
+        first_earned: dict[str, object] = {}
+        for _, eid, ts, _ in sorted(awards, key=lambda r: r[2] or ""):
+            if eid not in first_earned:
+                first_earned[eid] = ts
+
+        catalog = repo.get_erem_katalogus(user)
+        now = datetime.now(_tz.utc)
+        would_grant: list[tuple[str, object, object, str]] = []  # (erem_id, erem, orig_ts, note)
+
+        for erem_id, erem in catalog.items():
+            rule_fn = SZABALY_REGISTRY.get(erem_id)
+            if rule_fn is None:
+                if not erem.condition:
+                    continue
+                # dynamic condition
+                try:
+                    earned = _eval_dynamic_condition(
+                        user, erem.condition, repo._engine,
+                        valid_from=erem.condition_valid_from,
+                    )
+                except Exception:
+                    earned = False
+            else:
+                try:
+                    earned = rule_fn(user, None, repo._engine)
+                except Exception:
+                    earned = False
+
+            if earned:
+                orig = first_earned.get(erem_id)
+                would_grant.append((erem_id, erem, orig, ""))
+
+        typer.echo(f"  Újra kiosztható érmek: {len(would_grant)}")
+        typer.echo("")
+
+        kept_ids = {eid for eid, _, _, _ in would_grant}
+        lost_ids = [eid for eid in counts if eid not in kept_ids]
+
+        if would_grant:
+            typer.echo(f"  ✅ MEGMARADNA ({len(would_grant)} érem):")
+            for eid, erem, orig, _ in would_grant:
+                orig_str = f"  ← eredeti: {orig}" if orig else ""
+                typer.echo(f"    • {erem.ikon}  {erem.nev:30s}  [{erem.kategoria}]{orig_str}")
+
+        if lost_ids:
+            typer.echo(f"\n  ❌ ELVESZNE ({len(lost_ids)} érem – a feltétel most már nem teljesül):")
+            for eid in lost_ids:
+                e = catalog.get(eid)
+                label = f"{e.ikon}  {e.nev}" if e else eid
+                typer.echo(f"    • {label}")
+
+        # ── 3. Timestamp warning ─────────────────────────────────────────
+        typer.echo(f"\n  ⏰ IDŐBÉLYEG FIGYELMEZTETÉS:")
+        typer.echo(f"  A grant_erem mindig datetime.now()-t használ szerzett_at-nak.")
+        typer.echo(f"  Az eredeti szerzési dátumok ELVESZNEK a --clear után!")
+        typer.echo(f"  Pl. '🥇 Félszázad' eredetileg: {first_earned.get('felszazad', 'ismeretlen')}")
+        typer.echo(f"      újra kiosztva: {now.strftime('%Y-%m-%d %H:%M:%S')} UTC (mai dátum)")
+        typer.echo(f"\n  (Semmi nem változott – ez dry-run volt.)\n")
+        return
+
+    # ── CLEAR + REEVAL ────────────────────────────────────────────────────
+    if clear:
+        typer.echo(f"\n=== Érem clear + újraértékelés: {user}  (DB: {db_path}) ===\n")
+        typer.echo(f"  Törlés: {len(awards)} award-sor...")
+        with Session(repo._engine) as s:
+            s.execute(
+                sa_delete(FelhasznaloEremRecord)
+                .where(FelhasznaloEremRecord.felhasznalo_nev == user)
+            )
+            s.commit()
+        typer.echo(f"  ✅ Törölve.")
+        typer.echo(f"  Újraértékelés futtatása...")
+        earned = check_new_medals(user, None, repo)
+        if earned:
+            typer.echo(f"\n  ✅ Kiosztott érmek ({len(earned)} db):")
+            for erem in earned:
+                typer.echo(f"    • {erem.ikon}  {erem.nev}  [{erem.kategoria}]")
+        else:
+            typer.echo("  Nem sikerült egyetlen érmet sem visszaállítani.")
+        typer.echo("")
+        return
+
+    # ── DEFAULT: just run check_new_medals ───────────────────────────────
     typer.echo(f"\n=== Érem-feltételek ellenőrzése: {user}  (DB: {db_path}) ===\n")
+
+    if duplicates:
+        typer.echo(f"  ⚠️  Duplikált sorok találhatók ({len(duplicates)} érem) – futtasd: --dry-run  vagy --clear")
+        for eid, cnt in duplicates.items():
+            typer.echo(f"    {eid}  → {cnt} sor")
+        typer.echo("")
 
     earned = check_new_medals(user, None, repo)
 

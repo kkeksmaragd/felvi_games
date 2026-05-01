@@ -26,6 +26,7 @@ import logging
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Callable
 
 from sqlalchemy import func, select
@@ -39,6 +40,11 @@ if TYPE_CHECKING:
     from felvi_games.db import FeladatRepository
 
 logger = logging.getLogger(__name__)
+
+# Context variable used by --simulate to replay history as of a given timestamp.
+# Set this to a datetime before calling rule functions to make them behave as if
+# that moment is "now" (i.e. only events up to that timestamp are visible).
+_simulation_as_of: ContextVar["datetime | None"] = ContextVar("_simulation_as_of", default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -290,8 +296,15 @@ def _nap(dt: datetime) -> datetime:
     return d.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
+def _sim_now() -> datetime:
+    """Return the simulation reference time, or actual now."""
+    t = _simulation_as_of.get()
+    return t if t is not None else datetime.now(timezone.utc)
+
+
 def _distinct_play_days(session: Session, user: str, from_dt: datetime | None = None) -> list[datetime]:
     from felvi_games.db import MenetRecord
+    _as_of = _simulation_as_of.get()
     stmt = (
         select(MenetRecord.started_at)
         .where(MenetRecord.felhasznalo_nev == user)
@@ -299,6 +312,8 @@ def _distinct_play_days(session: Session, user: str, from_dt: datetime | None = 
     )
     if from_dt:
         stmt = stmt.where(MenetRecord.started_at >= from_dt)
+    if _as_of is not None:
+        stmt = stmt.where(MenetRecord.started_at <= _as_of)
     rows = session.scalars(stmt).all()
     seen: set[str] = set()
     days: list[datetime] = []
@@ -347,42 +362,50 @@ def _current_streak(days: list[datetime]) -> int:
 
 def _rule_elso_menet(user: str, session_id: int | None, engine: "Engine") -> bool:
     from felvi_games.db import MenetRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        cnt = s.scalar(
-            select(func.count()).select_from(MenetRecord)
-            .where(MenetRecord.felhasznalo_nev == user,
-                   MenetRecord.ended_at.is_not(None))
-        ) or 0
+        stmt = (select(func.count()).select_from(MenetRecord)
+                .where(MenetRecord.felhasznalo_nev == user,
+                       MenetRecord.ended_at.is_not(None)))
+        if _as_of is not None:
+            stmt = stmt.where(MenetRecord.ended_at <= _as_of)
+        cnt = s.scalar(stmt) or 0
     return cnt >= 1
 
 
 def _rule_szaz_feladat(user: str, session_id: int | None, engine: "Engine") -> bool:
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        cnt = s.scalar(
-            select(func.count()).select_from(MegoldasRecord)
-            .where(MegoldasRecord.felhasznalo_nev == user)
-        ) or 0
+        stmt = (select(func.count()).select_from(MegoldasRecord)
+                .where(MegoldasRecord.felhasznalo_nev == user))
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        cnt = s.scalar(stmt) or 0
     return cnt >= 100
 
 
 def _rule_otszaz_feladat(user: str, session_id: int | None, engine: "Engine") -> bool:
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        cnt = s.scalar(
-            select(func.count()).select_from(MegoldasRecord)
-            .where(MegoldasRecord.felhasznalo_nev == user)
-        ) or 0
+        stmt = (select(func.count()).select_from(MegoldasRecord)
+                .where(MegoldasRecord.felhasznalo_nev == user))
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        cnt = s.scalar(stmt) or 0
     return cnt >= 500
 
 
 def _rule_ezer_feladat(user: str, session_id: int | None, engine: "Engine") -> bool:
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        cnt = s.scalar(
-            select(func.count()).select_from(MegoldasRecord)
-            .where(MegoldasRecord.felhasznalo_nev == user)
-        ) or 0
+        stmt = (select(func.count()).select_from(MegoldasRecord)
+                .where(MegoldasRecord.felhasznalo_nev == user))
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        cnt = s.scalar(stmt) or 0
     return cnt >= 1000
 
 
@@ -421,12 +444,16 @@ def _rule_sorozat_20(user: str, session_id: int | None, engine: "Engine") -> boo
 
 def _max_helyes_sorozat(user: str, engine: "Engine") -> int:
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        rows = s.scalars(
+        stmt = (
             select(MegoldasRecord.helyes)
             .where(MegoldasRecord.felhasznalo_nev == user)
             .order_by(MegoldasRecord.created_at)
-        ).all()
+        )
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        rows = s.scalars(stmt).all()
     best = cur = 0
     for h in rows:
         if h:
@@ -440,63 +467,71 @@ def _max_helyes_sorozat(user: str, engine: "Engine") -> int:
 def _rule_villam(user: str, session_id: int | None, engine: "Engine") -> bool:
     """Any answer that scored points (including partial) within 10 seconds."""
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        cnt = s.scalar(
-            select(func.count()).select_from(MegoldasRecord)
-            .where(
-                MegoldasRecord.felhasznalo_nev == user,
-                MegoldasRecord.pont > 0,
-                MegoldasRecord.elapsed_sec.is_not(None),
-                MegoldasRecord.elapsed_sec <= 10.0,
-            )
-        ) or 0
+        stmt = (select(func.count()).select_from(MegoldasRecord)
+                .where(MegoldasRecord.felhasznalo_nev == user,
+                       MegoldasRecord.pont > 0,
+                       MegoldasRecord.elapsed_sec.is_not(None),
+                       MegoldasRecord.elapsed_sec <= 10.0))
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        cnt = s.scalar(stmt) or 0
     return cnt >= 1
 
 
 def _rule_hint_nelkul_20(user: str, session_id: int | None, engine: "Engine") -> bool:
     """Last 20 answers (any outcome) without asking for a hint."""
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        rows = s.scalars(
-            select(MegoldasRecord.segitseg_kert)
-            .where(MegoldasRecord.felhasznalo_nev == user)
-            .order_by(MegoldasRecord.created_at.desc())
-            .limit(20)
-        ).all()
+        stmt = (select(MegoldasRecord.segitseg_kert)
+                .where(MegoldasRecord.felhasznalo_nev == user)
+                .order_by(MegoldasRecord.created_at.desc())
+                .limit(20))
+        if _as_of is not None:
+            stmt = (select(MegoldasRecord.segitseg_kert)
+                    .where(MegoldasRecord.felhasznalo_nev == user,
+                           MegoldasRecord.created_at <= _as_of)
+                    .order_by(MegoldasRecord.created_at.desc())
+                    .limit(20))
+        rows = s.scalars(stmt).all()
     return len(rows) == 20 and not any(rows)
 
 
 def _rule_magas_pontossag(user: str, session_id: int | None, engine: "Engine") -> bool:
     """At least 80% of total possible points earned across 50+ attempts."""
     from felvi_games.db import FeladatRecord, MegoldasRecord
+    _as_of = _simulation_as_of.get()
+    _f = [MegoldasRecord.felhasznalo_nev == user]
+    if _as_of is not None:
+        _f.append(MegoldasRecord.created_at <= _as_of)
     with Session(engine) as s:
         total = s.scalar(
-            select(func.count()).select_from(MegoldasRecord)
-            .where(MegoldasRecord.felhasznalo_nev == user)
+            select(func.count()).select_from(MegoldasRecord).where(*_f)
         ) or 0
         if total < 50:
             return False
         earned = s.scalar(
-            select(func.sum(MegoldasRecord.pont))
-            .where(MegoldasRecord.felhasznalo_nev == user)
+            select(func.sum(MegoldasRecord.pont)).where(*_f)
         ) or 0
         max_possible = s.scalar(
             select(func.sum(FeladatRecord.max_pont))
             .join(MegoldasRecord, MegoldasRecord.feladat_id == FeladatRecord.id)
-            .where(MegoldasRecord.felhasznalo_nev == user)
+            .where(*_f)
         ) or 0
     return max_possible > 0 and (earned / max_possible) >= 0.80
 
 
 def _rule_het_egymas_utan(user: str, session_id: int | None, engine: "Engine") -> bool:
     with Session(engine) as s:
-        days = _distinct_play_days(s, user)
+        days = _distinct_play_days(s, user)  # _simulation_as_of applied inside
     return _current_streak(days) >= 7
 
 
 def _rule_harom_het_egymas_utan(user: str, session_id: int | None, engine: "Engine") -> bool:
     with Session(engine) as s:
-        days = _distinct_play_days(s, user)
+        days = _distinct_play_days(s, user)  # _simulation_as_of applied inside
     return _consecutive_days(days) >= 21
 
 
@@ -538,7 +573,7 @@ def _rule_pentek_matek_honap(user: str, session_id: int | None, engine: "Engine"
 def _rule_heti_haromszor(user: str, session_id: int | None, engine: "Engine") -> bool:
     """At least 3 distinct days in the most recent 7-day window."""
     with Session(engine) as s:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        cutoff = _sim_now() - timedelta(days=7)
         days = _distinct_play_days(s, user, from_dt=cutoff)
     return len(days) >= 3
 
@@ -546,49 +581,55 @@ def _rule_heti_haromszor(user: str, session_id: int | None, engine: "Engine") ->
 def _rule_reggeli_tanulas(user: str, session_id: int | None, engine: "Engine") -> bool:
     """Any answer submitted before 08:00 local time (timestamps stored as UTC)."""
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        rows = s.scalars(
-            select(MegoldasRecord.created_at)
-            .where(
-                MegoldasRecord.felhasznalo_nev == user,
-                func.strftime("%H", func.datetime(MegoldasRecord.created_at, "localtime")) < "08",
-            )
-        ).all()
+        stmt = (select(MegoldasRecord.created_at)
+                .where(MegoldasRecord.felhasznalo_nev == user,
+                       func.strftime("%H", func.datetime(MegoldasRecord.created_at, "localtime")) < "08"))
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        rows = s.scalars(stmt).all()
     return len(rows) > 0
 
 
 def _rule_mindket_targy(user: str, session_id: int | None, engine: "Engine") -> bool:
     from felvi_games.db import MenetRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        targyek = set(s.scalars(
-            select(MenetRecord.targy).where(MenetRecord.felhasznalo_nev == user)
-        ).all())
+        stmt = select(MenetRecord.targy).where(MenetRecord.felhasznalo_nev == user)
+        if _as_of is not None:
+            stmt = stmt.where(MenetRecord.started_at <= _as_of)
+        targyek = set(s.scalars(stmt).all())
     return {"matek", "magyar"}.issubset(targyek)
 
 
 def _rule_minden_szint(user: str, session_id: int | None, engine: "Engine") -> bool:
     from felvi_games.db import MenetRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        szintek = set(s.scalars(
-            select(MenetRecord.szint).where(MenetRecord.felhasznalo_nev == user)
-        ).all())
+        stmt = select(MenetRecord.szint).where(MenetRecord.felhasznalo_nev == user)
+        if _as_of is not None:
+            stmt = stmt.where(MenetRecord.started_at <= _as_of)
+        szintek = set(s.scalars(stmt).all())
     return _SZINTEK_OSSZ.issubset(szintek)
 
 
 def _rule_minden_feladattipus(user: str, session_id: int | None, engine: "Engine") -> bool:
     from felvi_games.db import FeladatRecord, MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        rows = s.scalars(
-            select(FeladatRecord.feladat_tipus)
-            .join(MegoldasRecord, MegoldasRecord.feladat_id == FeladatRecord.id)
-            .where(MegoldasRecord.felhasznalo_nev == user)
-        ).all()
+        stmt = (select(FeladatRecord.feladat_tipus)
+                .join(MegoldasRecord, MegoldasRecord.feladat_id == FeladatRecord.id)
+                .where(MegoldasRecord.felhasznalo_nev == user))
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        rows = s.scalars(stmt).all()
     return _FELADAT_TIPUSOK_OSSZ.issubset({r for r in rows if r})
 
 
 def _rule_visszatero(user: str, session_id: int | None, engine: "Engine") -> bool:
     with Session(engine) as s:
-        days = _distinct_play_days(s, user)
+        days = _distinct_play_days(s, user)  # _simulation_as_of applied inside
     return len(days) >= 3
 
 
@@ -605,80 +646,90 @@ def _rule_maraton(user: str, session_id: int | None, engine: "Engine") -> bool:
 
 def _rule_tiz_feladat(user: str, session_id: int | None, engine: "Engine") -> bool:
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        cnt = s.scalar(
-            select(func.count()).select_from(MegoldasRecord)
-            .where(MegoldasRecord.felhasznalo_nev == user)
-        ) or 0
+        stmt = (select(func.count()).select_from(MegoldasRecord)
+                .where(MegoldasRecord.felhasznalo_nev == user))
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        cnt = s.scalar(stmt) or 0
     return cnt >= 10
 
 
 def _rule_huszonot_feladat(user: str, session_id: int | None, engine: "Engine") -> bool:
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        cnt = s.scalar(
-            select(func.count()).select_from(MegoldasRecord)
-            .where(MegoldasRecord.felhasznalo_nev == user)
-        ) or 0
+        stmt = (select(func.count()).select_from(MegoldasRecord)
+                .where(MegoldasRecord.felhasznalo_nev == user))
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        cnt = s.scalar(stmt) or 0
     return cnt >= 25
 
 
 def _rule_otven_feladat(user: str, session_id: int | None, engine: "Engine") -> bool:
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        cnt = s.scalar(
-            select(func.count()).select_from(MegoldasRecord)
-            .where(MegoldasRecord.felhasznalo_nev == user)
-        ) or 0
+        stmt = (select(func.count()).select_from(MegoldasRecord)
+                .where(MegoldasRecord.felhasznalo_nev == user))
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        cnt = s.scalar(stmt) or 0
     return cnt >= 50
 
 
 def _rule_szaz_pont(user: str, session_id: int | None, engine: "Engine") -> bool:
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        total = s.scalar(
-            select(func.sum(MegoldasRecord.pont))
-            .where(MegoldasRecord.felhasznalo_nev == user)
-        ) or 0
+        stmt = (select(func.sum(MegoldasRecord.pont))
+                .where(MegoldasRecord.felhasznalo_nev == user))
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        total = s.scalar(stmt) or 0
     return total >= 100
 
 
 def _rule_otszaz_pont(user: str, session_id: int | None, engine: "Engine") -> bool:
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        total = s.scalar(
-            select(func.sum(MegoldasRecord.pont))
-            .where(MegoldasRecord.felhasznalo_nev == user)
-        ) or 0
+        stmt = (select(func.sum(MegoldasRecord.pont))
+                .where(MegoldasRecord.felhasznalo_nev == user))
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        total = s.scalar(stmt) or 0
     return total >= 500
 
 
 def _rule_esti_tanulas(user: str, session_id: int | None, engine: "Engine") -> bool:
     """Any answer submitted at or after 22:00 local time (timestamps stored as UTC)."""
     from felvi_games.db import MegoldasRecord
+    _as_of = _simulation_as_of.get()
     with Session(engine) as s:
-        rows = s.scalars(
-            select(MegoldasRecord.created_at)
-            .where(
-                MegoldasRecord.felhasznalo_nev == user,
-                func.strftime("%H", func.datetime(MegoldasRecord.created_at, "localtime")) >= "22",
-            )
-        ).all()
+        stmt = (select(MegoldasRecord.created_at)
+                .where(MegoldasRecord.felhasznalo_nev == user,
+                       func.strftime("%H", func.datetime(MegoldasRecord.created_at, "localtime")) >= "22"))
+        if _as_of is not None:
+            stmt = stmt.where(MegoldasRecord.created_at <= _as_of)
+        rows = s.scalars(stmt).all()
     return len(rows) > 0
 
 
 def _rule_visszatero_tiz(user: str, session_id: int | None, engine: "Engine") -> bool:
     with Session(engine) as s:
-        days = _distinct_play_days(s, user)
+        days = _distinct_play_days(s, user)  # _simulation_as_of applied inside
     return len(days) >= 10
 
 
 def _rule_heti_bajnok(user: str, session_id: int | None, engine: "Engine") -> bool:
     """5+ distinct play days in the current week (Mon–Sun)."""
-    now = datetime.now(timezone.utc)
+    now = _sim_now()
     start_of_week = _nap(now) - timedelta(days=now.weekday())
     with Session(engine) as s:
-        days = _distinct_play_days(s, user, from_dt=start_of_week)
+        days = _distinct_play_days(s, user, from_dt=start_of_week)  # upper bound via _simulation_as_of
     return len(days) >= 5
 
 
@@ -726,38 +777,46 @@ def _eval_dynamic_condition(
     else:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=window_h)
 
+    # Simulation upper-bound: when replaying history, don't count future events
+    _as_of = _simulation_as_of.get()
+    upper = _as_of if _as_of is not None else None
+
     with Session(engine) as s:
         if ctype == "feladat_count":
-            cnt = s.scalar(
-                select(func.count()).select_from(MegoldasRecord)
-                .where(MegoldasRecord.felhasznalo_nev == user,
-                       MegoldasRecord.created_at >= cutoff)
-            ) or 0
+            stmt = (select(func.count()).select_from(MegoldasRecord)
+                    .where(MegoldasRecord.felhasznalo_nev == user,
+                           MegoldasRecord.created_at >= cutoff))
+            if upper is not None:
+                stmt = stmt.where(MegoldasRecord.created_at <= upper)
+            cnt = s.scalar(stmt) or 0
             return cnt >= n
 
         elif ctype == "helyes_count":
-            cnt = s.scalar(
-                select(func.count()).select_from(MegoldasRecord)
-                .where(MegoldasRecord.felhasznalo_nev == user,
-                       MegoldasRecord.helyes == True,  # noqa: E712
-                       MegoldasRecord.created_at >= cutoff)
-            ) or 0
+            stmt = (select(func.count()).select_from(MegoldasRecord)
+                    .where(MegoldasRecord.felhasznalo_nev == user,
+                           MegoldasRecord.helyes == True,  # noqa: E712
+                           MegoldasRecord.created_at >= cutoff))
+            if upper is not None:
+                stmt = stmt.where(MegoldasRecord.created_at <= upper)
+            cnt = s.scalar(stmt) or 0
             return cnt >= n
 
         elif ctype == "pont_sum":
-            total = s.scalar(
-                select(func.sum(MegoldasRecord.pont))
-                .where(MegoldasRecord.felhasznalo_nev == user,
-                       MegoldasRecord.created_at >= cutoff)
-            ) or 0
+            stmt = (select(func.sum(MegoldasRecord.pont))
+                    .where(MegoldasRecord.felhasznalo_nev == user,
+                           MegoldasRecord.created_at >= cutoff))
+            if upper is not None:
+                stmt = stmt.where(MegoldasRecord.created_at <= upper)
+            total = s.scalar(stmt) or 0
             return total >= n
 
         elif ctype == "streak":
-            rows = s.scalars(
-                select(MegoldasRecord.helyes)
-                .where(MegoldasRecord.felhasznalo_nev == user)
-                .order_by(MegoldasRecord.created_at)
-            ).all()
+            stmt = (select(MegoldasRecord.helyes)
+                    .where(MegoldasRecord.felhasznalo_nev == user)
+                    .order_by(MegoldasRecord.created_at))
+            if upper is not None:
+                stmt = stmt.where(MegoldasRecord.created_at <= upper)
+            rows = s.scalars(stmt).all()
             best = cur = 0
             for h in rows:
                 if h:
@@ -768,11 +827,12 @@ def _eval_dynamic_condition(
             return best >= n
 
         elif ctype == "session_count":
-            cnt = s.scalar(
-                select(func.count()).select_from(MenetRecord)
-                .where(MenetRecord.felhasznalo_nev == user,
-                       MenetRecord.started_at >= cutoff)
-            ) or 0
+            stmt = (select(func.count()).select_from(MenetRecord)
+                    .where(MenetRecord.felhasznalo_nev == user,
+                           MenetRecord.started_at >= cutoff))
+            if upper is not None:
+                stmt = stmt.where(MenetRecord.started_at <= upper)
+            cnt = s.scalar(stmt) or 0
             return cnt >= n
 
         elif ctype == "tokeletes_session":
@@ -865,6 +925,8 @@ def _eval_dynamic_condition(
                     InterakcioRecord.created_at >= cutoff,
                 )
             )
+            if upper is not None:
+                stmt = stmt.where(InterakcioRecord.created_at <= upper)
 
             targy = condition.get("targy")
             if isinstance(targy, str) and targy.strip():
@@ -920,45 +982,49 @@ def _count_dynamic_condition(
             ) or 0
             return cnt, n
 
-        elif ctype == "helyes_count":
-            cnt = s.scalar(
-                select(func.count()).select_from(MegoldasRecord)
-                .where(MegoldasRecord.felhasznalo_nev == user,
-                       MegoldasRecord.helyes == True,  # noqa: E712
-                       MegoldasRecord.created_at >= cutoff)
-            ) or 0
-            return cnt, n
+        elif ctype == "feladat_subject":
+            subject = condition.get("subject", "")
+            from felvi_games.db import MenetRecord as MR
+            stmt = (select(func.count()).select_from(MegoldasRecord)
+                    .join(MR, MR.id == MegoldasRecord.menet_id)
+                    .where(MegoldasRecord.felhasznalo_nev == user,
+                           MR.targy == subject,
+                           MegoldasRecord.created_at >= cutoff))
+            if upper is not None:
+                stmt = stmt.where(MegoldasRecord.created_at <= upper)
+            cnt = s.scalar(stmt) or 0
+            return cnt >= n
 
-        elif ctype == "pont_sum":
-            total = s.scalar(
-                select(func.sum(MegoldasRecord.pont))
-                .where(MegoldasRecord.felhasznalo_nev == user,
-                       MegoldasRecord.created_at >= cutoff)
-            ) or 0
-            return int(total), n
+        elif ctype == "before_hour":
+            hour = int(condition.get("hour", 8))
+            stmt = (select(func.count()).select_from(MegoldasRecord)
+                    .where(MegoldasRecord.felhasznalo_nev == user,
+                           MegoldasRecord.created_at >= cutoff,
+                           func.strftime("%H", func.datetime(MegoldasRecord.created_at, "localtime")) < f"{hour:02d}"))
+            if upper is not None:
+                stmt = stmt.where(MegoldasRecord.created_at <= upper)
+            cnt = s.scalar(stmt) or 0
+            return cnt >= n
 
-        elif ctype == "streak":
-            rows = s.scalars(
-                select(MegoldasRecord.helyes)
-                .where(MegoldasRecord.felhasznalo_nev == user)
-                .order_by(MegoldasRecord.created_at)
-            ).all()
-            best = cur = 0
-            for h in rows:
-                if h:
-                    cur += 1
-                    best = max(best, cur)
-                else:
-                    cur = 0
-            return best, n
+        elif ctype == "after_hour":
+            hour = int(condition.get("hour", 22))
+            stmt = (select(func.count()).select_from(MegoldasRecord)
+                    .where(MegoldasRecord.felhasznalo_nev == user,
+                           MegoldasRecord.created_at >= cutoff,
+                           func.strftime("%H", func.datetime(MegoldasRecord.created_at, "localtime")) >= f"{hour:02d}"))
+            if upper is not None:
+                stmt = stmt.where(MegoldasRecord.created_at <= upper)
+            cnt = s.scalar(stmt) or 0
+            return cnt >= n
 
         elif ctype == "session_count":
-            cnt = s.scalar(
-                select(func.count()).select_from(MenetRecord)
-                .where(MenetRecord.felhasznalo_nev == user,
-                       MenetRecord.started_at >= cutoff)
-            ) or 0
-            return cnt, n
+            stmt = (select(func.count()).select_from(MenetRecord)
+                    .where(MenetRecord.felhasznalo_nev == user,
+                           MenetRecord.started_at >= cutoff))
+            if upper is not None:
+                stmt = stmt.where(MenetRecord.started_at <= upper)
+            cnt = s.scalar(stmt) or 0
+            return cnt >= n
 
         elif ctype == "feladat_subject":
             subject = condition.get("subject", "")
