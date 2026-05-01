@@ -164,6 +164,7 @@ class Feladat:
     # --- compiled assets (optional, cached after first use) ---
     tts_kerdes_path: str | None = None      # relative path to TTS MP3 for the question
     tts_magyarazat_path: str | None = None  # relative path to TTS MP3 for the explanation
+    tts_kerdes_szoveg: str | None = None    # plain-text (markdown-stripped) version used for the TTS recording
     # --- extraction context ---
     kontextus: str | None = None            # shared preamble/table/figure text (for standalone tasks)
     abra_van: bool = False                  # True if task references a figure/graph
@@ -239,6 +240,7 @@ class Feladat:
             ertekeles_megjegyzes=r.ertekeles_megjegyzes,
             tts_kerdes_path=r.tts_kerdes_path,
             tts_magyarazat_path=r.tts_magyarazat_path,
+            tts_kerdes_szoveg=r.tts_kerdes_szoveg,
             kontextus=r.kontextus,
             abra_van=r.abra_van,
             feladat_oldal=r.feladat_oldal,
@@ -254,12 +256,14 @@ class Feladat:
         self,
         tts_kerdes_path: str | None = None,
         tts_magyarazat_path: str | None = None,
+        tts_kerdes_szoveg: str | None = None,
     ) -> "Feladat":
         """Return a new Feladat with updated asset path fields (frozen → copy)."""
         return dataclasses.replace(
             self,
             tts_kerdes_path=tts_kerdes_path if tts_kerdes_path is not None else self.tts_kerdes_path,
             tts_magyarazat_path=tts_magyarazat_path if tts_magyarazat_path is not None else self.tts_magyarazat_path,
+            tts_kerdes_szoveg=tts_kerdes_szoveg if tts_kerdes_szoveg is not None else self.tts_kerdes_szoveg,
         )
 
     def elfogadott_valaszok_vagy_helyes(self) -> list[str]:
@@ -272,7 +276,8 @@ class Feladat:
         return "⭐" * self.neh + "☆" * (3 - self.neh)
 
     def tts_szoveg(self) -> str:
-        return self.kerdes
+        """Stored LLM-prepared TTS text, or raw kerdes if not yet generated."""
+        return self.tts_kerdes_szoveg or self.kerdes
 
     def eredmeny_tts_szoveg(self, visszajelzes: str) -> str:
         return (

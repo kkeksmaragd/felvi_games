@@ -10,7 +10,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from felvi_games.ai import check_answer, speech_to_text, text_to_speech
+from felvi_games.ai import check_answer, kerdes_to_tts_szoveg, speech_to_text, text_to_speech
 from felvi_games.config import get_exams_dir, resolve_asset, setup_logging, text_cache_path
 from felvi_games.db import FeladatRepository
 from felvi_games.models import KATEGORIA_INFO, Ertekeles, Fazis, Feladat, GameState, InterakcioTipus
@@ -500,14 +500,21 @@ def _render_kerdes(gs: GameState) -> None:
     # --- TTS, Tipp, Hiba gombok ---
     col_tts, col_hint, col_hiba = st.columns(3)
     with col_tts:
-        if st.button("🔊 Felolvasás"):
-            if feladat.tts_kerdes_path:
+        if st.button("🔊 Felolvasás", help=feladat.tts_kerdes_szoveg or None):
+            # Regenerate if audio exists but the plain-text TTS script is missing
+            stale = feladat.tts_kerdes_path and not feladat.tts_kerdes_szoveg
+            if feladat.tts_kerdes_path and not stale:
                 gs.tts_audio = resolve_asset(feladat.tts_kerdes_path).read_bytes()
             else:
+                tts_text = kerdes_to_tts_szoveg(feladat.kerdes)
                 with st.spinner("Hangszintézis..."):
-                    audio = text_to_speech(feladat.tts_szoveg())
+                    audio = text_to_speech(tts_text)
                     gs.tts_audio = audio
-                    updated = get_repo().save_tts_assets(feladat, tts_kerdes=audio)
+                    updated = get_repo().save_tts_assets(
+                        feladat,
+                        tts_kerdes=audio,
+                        tts_kerdes_szoveg=tts_text,
+                    )
                     gs.aktualis = updated
             if gs.felhasznalo:
                 get_repo().log_interakcio(

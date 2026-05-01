@@ -20,6 +20,19 @@ _client = OpenAI(
     base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
 )
 MODEL = os.getenv("LLM_MODEL", "gpt-4o")
+_CHEAP_MODEL = os.getenv("LLM_CHEAP_MODEL", "gpt-4o")
+
+_TTS_PREP_SYSTEM = (
+    "Felolvasáshoz előkészítő asszisztens vagy. "
+    "Kapod a feladat markdown szövegét, és visszaadsz egy rövid, természetesen felolvasható "
+    "magyar szöveget. Szabályok: "
+    "- Távolítsd el az összes markdown formázást (**, *, #, backtick, stb.). "
+    "- A LaTeX matematikai jelöléseket ($...$ és $$...$$) alakítsd át természetes szóbeli "
+    "  megfogalmazássá (pl. $x^2$ → 'x négyzet', $\\frac{a}{b}$ → 'a per b'). "
+    "- Táblázatokat, listákat folyó szöveggé fogalmazd át. "
+    "- Legyen természetes, folyékony, felolvasható szöveg. "
+    "- Csak a szöveget add vissza, semmi mást."
+)
 
 _EVAL_SYSTEM = (
     "Magyar felvételi kvíz értékelő vagy. "
@@ -71,6 +84,24 @@ def speech_to_text(audio_bytes: bytes) -> str:
         return transcript.text
     finally:
         os.unlink(tmp_path)
+
+
+def kerdes_to_tts_szoveg(kerdes_markdown: str) -> str:
+    """Convert a markdown question text into natural spoken Hungarian for TTS.
+
+    Uses a cost-efficient model (_CHEAP_MODEL) since this is a simple
+    text-transformation task.
+    """
+    response = _client.chat.completions.create(
+        model=_CHEAP_MODEL,
+        messages=[
+            {"role": "system", "content": _TTS_PREP_SYSTEM},
+            {"role": "user", "content": kerdes_markdown},
+        ],
+        temperature=0,
+        max_tokens=512,
+    )
+    return (response.choices[0].message.content or "").strip()
 
 
 def check_answer(

@@ -196,6 +196,7 @@ class FeladatRecord(Base):
     # Compiled TTS assets – relative paths to MP3 files under assets_dir
     tts_kerdes_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     tts_magyarazat_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    tts_kerdes_szoveg: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Extraction context
     kontextus: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -405,6 +406,8 @@ class FeladatRepository:
                     existing.tts_kerdes_path = feladat.tts_kerdes_path
                 if feladat.tts_magyarazat_path is not None:
                     existing.tts_magyarazat_path = feladat.tts_magyarazat_path
+                if feladat.tts_kerdes_szoveg is not None:
+                    existing.tts_kerdes_szoveg = feladat.tts_kerdes_szoveg
                 existing.kontextus = feladat.kontextus
                 existing.abra_van = feladat.abra_van
                 existing.feladat_oldal = feladat.feladat_oldal
@@ -443,6 +446,7 @@ class FeladatRepository:
                     ertekeles_megjegyzes=feladat.ertekeles_megjegyzes,
                     tts_kerdes_path=feladat.tts_kerdes_path,
                     tts_magyarazat_path=feladat.tts_magyarazat_path,
+                    tts_kerdes_szoveg=feladat.tts_kerdes_szoveg,
                     kontextus=feladat.kontextus,
                     abra_van=feladat.abra_van,
                     feladat_oldal=feladat.feladat_oldal,
@@ -486,6 +490,7 @@ class FeladatRepository:
                         ertekeles_megjegyzes=f.ertekeles_megjegyzes,
                         tts_kerdes_path=f.tts_kerdes_path,
                         tts_magyarazat_path=f.tts_magyarazat_path,
+                        tts_kerdes_szoveg=f.tts_kerdes_szoveg,
                         kontextus=f.kontextus,
                         abra_van=f.abra_van,
                         feladat_oldal=f.feladat_oldal,
@@ -515,6 +520,7 @@ class FeladatRepository:
                         ertekeles_megjegyzes=f.ertekeles_megjegyzes,
                         tts_kerdes_path=f.tts_kerdes_path,
                         tts_magyarazat_path=f.tts_magyarazat_path,
+                        tts_kerdes_szoveg=f.tts_kerdes_szoveg,
                         kontextus=f.kontextus,
                         abra_van=f.abra_van,
                         feladat_oldal=f.feladat_oldal,
@@ -614,10 +620,12 @@ class FeladatRepository:
         feladat: Feladat,
         tts_kerdes: bytes | None = None,
         tts_magyarazat: bytes | None = None,
+        tts_kerdes_szoveg: str | None = None,
     ) -> Feladat:
         """
         Write TTS bytes to files and persist the relative paths in the DB.
-        Returns an updated Feladat with the new path fields set.
+        Also stores the plain-text TTS script when *tts_kerdes_szoveg* is provided.
+        Returns an updated Feladat with the new path/text fields set.
         """
         with Session(self._engine) as session:
             record = session.get(FeladatRecord, feladat.id)
@@ -635,6 +643,9 @@ class FeladatRepository:
                 record.tts_kerdes_path = rel
                 new_kerdes_path = rel
 
+            if tts_kerdes_szoveg is not None:
+                record.tts_kerdes_szoveg = tts_kerdes_szoveg
+
             if tts_magyarazat is not None:
                 rel = relative_asset_path(feladat.id, "magyarazat", feladat.szint, feladat.ev, feladat.valtozat)
                 abs_path = resolve_asset(rel)
@@ -649,6 +660,7 @@ class FeladatRepository:
         return feladat.with_assets(
             tts_kerdes_path=new_kerdes_path,
             tts_magyarazat_path=new_magyarazat_path,
+            tts_kerdes_szoveg=tts_kerdes_szoveg,
         )
 
     def load_tts_bytes(self, relative_path: str) -> bytes:
