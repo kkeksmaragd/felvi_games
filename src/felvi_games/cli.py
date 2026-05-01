@@ -337,6 +337,9 @@ def medals(
     window_hours: Annotated[
         int, typer.Option("--window-hours", help="Dry-run javaslat időablaka órában (1-18)")
     ] = 18,
+    delete_id: Annotated[
+        Optional[str], typer.Option("--delete-id", help="Érem törlése az id alapján (csak dinamikus/privát érmekre)")
+    ] = None,
 ) -> None:
     """Érmek / achievements: katalógus és felhasználói haladás."""
     import re
@@ -387,6 +390,28 @@ def medals(
     if generate and generate_dry_run:
         typer.echo("[!] A --generate és --generate-dry-run együtt nem használható.")
         raise typer.Exit(code=2)
+
+    if delete_id:
+        db_path = db or get_db_path()
+        if not db_path.exists():
+            typer.echo(f"[!] DB nem található: {db_path}")
+            raise typer.Exit(code=1)
+        engine = get_engine(db_path)
+        with Session(engine) as s:
+            row = s.execute(
+                text("SELECT id, nev, ikon, condition_json FROM eremek WHERE id = :eid"),
+                {"eid": delete_id},
+            ).first()
+            if not row:
+                typer.echo(f"[!] Nem található érem ezzel az id-vel: {delete_id}")
+                raise typer.Exit(code=1)
+            if not row.condition_json:
+                typer.echo(f"[!] Ez nem dinamikus érem (nincs condition_json), törlés megtagadva: {delete_id}")
+                raise typer.Exit(code=1)
+            s.execute(text("DELETE FROM eremek WHERE id = :eid"), {"eid": delete_id})
+            s.commit()
+        typer.echo(f"✅ Törölve: {row.ikon}  {row.nev}  (id={delete_id})")
+        return
 
     if generator_inputs:
         if not user:
